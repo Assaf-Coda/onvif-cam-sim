@@ -16,3 +16,9 @@ cameras:
     source: rtsp://admin:admin@127.0.0.1:8554/stream
     onvif_port: 8083
     rtsp_port: 8556
+  - name: synth
+    source: ./media/motion_test.mp4
+    onvif_port: 8084
+    rtsp_port: 8557
+    motion:
+      hold_seconds: 2

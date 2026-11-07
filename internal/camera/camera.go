@@ -4,6 +4,7 @@ package camera
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"fmt"
 	"image"
@@ -13,12 +14,14 @@ import (
 	"time"
 
 	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/assafhalevy/onvif-cam-sim/internal/motion"
 	"github.com/assafhalevy/onvif-cam-sim/internal/source"
 )
 
 type Camera struct {
-	Cfg  config.Camera
-	UUID string
+	Cfg    config.Camera
+	UUID   string
+	Motion *motion.Detector
 
 	info atomic.Pointer[source.Info]
 
@@ -29,7 +32,7 @@ type Camera struct {
 }
 
 func New(cfg config.Camera) *Camera {
-	return &Camera{Cfg: cfg, UUID: newUUID()}
+	return &Camera{Cfg: cfg, UUID: newUUID(), Motion: motion.New(cfg.Motion)}
 }
 
 // SetInfo records the probed source description.
@@ -54,6 +57,23 @@ func (c *Camera) OnFrame(rgb []byte, w, h int) {
 	c.w, c.h = w, h
 	c.frameAt = time.Now()
 	c.mu.Unlock()
+	if c.Cfg.Motion.IsEnabled() {
+		c.Motion.Feed(rgb, w, h, time.Now())
+	}
+}
+
+// RunMotionTicker expires the motion hold time while no frames arrive.
+func (c *Camera) RunMotionTicker(ctx context.Context) {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			c.Motion.Tick(now)
+		}
+	}
 }
 
 // SnapshotJPEG encodes the latest frame. Returns an error when no frame has arrived yet.

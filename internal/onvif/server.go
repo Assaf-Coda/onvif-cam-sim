@@ -27,6 +27,7 @@ type Server struct {
 	http     *http.Server
 	handlers map[string]handler // "namespace|Action" or "Action"
 	noAuth   map[string]bool
+	events   *eventBus
 }
 
 func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, advertisedIP string, rtspPath string) *Server {
@@ -39,6 +40,7 @@ func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, ad
 		rtspPort: cam.Cfg.RTSPPort,
 		rtspPath: rtspPath,
 		handlers: map[string]handler{},
+		events:   newEventBus(),
 		noAuth: map[string]bool{
 			"GetSystemDateAndTime": true, "GetCapabilities": true, "GetServices": true,
 			"GetServiceCapabilities": true, "GetWsdlUrl": true, "GetHostname": true,
@@ -46,6 +48,12 @@ func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, ad
 	}
 	s.registerDevice()
 	s.registerMedia()
+	s.registerEvents()
+	s.registerAnalytics()
+	cam.Motion.OnChange(func(active bool) {
+		log.Info("motion", "active", active)
+		s.events.setMotion(active)
+	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/onvif/", s.serveSOAP)
 	mux.HandleFunc("/snapshot.jpg", s.serveSnapshot)

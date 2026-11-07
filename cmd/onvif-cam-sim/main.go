@@ -100,6 +100,7 @@ func main() {
 			FrameFPS:   cr.cfg.Motion.AnalysisFPS,
 		}
 		go source.Run(ctx, clog, opts, cam.OnFrame)
+		go cam.RunMotionTicker(ctx)
 		clog.Info("camera up", "onvif", osrv.XAddr("device_service"), "rtsp", fmt.Sprintf("rtsp://%s:%d/%s", cfg.AdvertisedIP, cr.cfg.RTSPPort, rtsp.Path))
 	}
 
