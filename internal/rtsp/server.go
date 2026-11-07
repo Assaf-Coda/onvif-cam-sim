@@ -16,7 +16,7 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/liberrors"
 	"github.com/pion/rtp"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 )
 
 const Path = "stream"

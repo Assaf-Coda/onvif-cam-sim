@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 )
 
 // frame draws a white block at (bx,by) with size bs on a black w x h rgb24 frame.

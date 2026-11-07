@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 )
 
 const Realm = "onvif-cam-sim"

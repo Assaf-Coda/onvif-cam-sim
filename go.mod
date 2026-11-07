@@ -1,4 +1,4 @@
-module github.com/assafhalevy/onvif-cam-sim
+module github.com/Assaf-Coda/onvif-cam-sim
 
 go 1.26.1
 

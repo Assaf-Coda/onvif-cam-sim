@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
-	"github.com/assafhalevy/onvif-cam-sim/internal/motion"
-	"github.com/assafhalevy/onvif-cam-sim/internal/source"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/motion"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/source"
 )
 
 type Camera struct {

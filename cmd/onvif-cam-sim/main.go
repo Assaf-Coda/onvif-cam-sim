@@ -11,13 +11,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/camera"
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
-	"github.com/assafhalevy/onvif-cam-sim/internal/discovery"
-	"github.com/assafhalevy/onvif-cam-sim/internal/onvif"
-	"github.com/assafhalevy/onvif-cam-sim/internal/rtsp"
-	"github.com/assafhalevy/onvif-cam-sim/internal/source"
-	"github.com/assafhalevy/onvif-cam-sim/internal/web"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/discovery"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/onvif"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/rtsp"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/source"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/web"
 )
 
 func main() {

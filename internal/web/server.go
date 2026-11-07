@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/camera"
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
-	"github.com/assafhalevy/onvif-cam-sim/internal/httpauth"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/httpauth"
 )
 
 //go:embed index.html

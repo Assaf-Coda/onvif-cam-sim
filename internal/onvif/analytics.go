@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 )
 
 // polygonXML renders a normalized 0..1 polygon in ONVIF's -1..1 coordinate space (y up).

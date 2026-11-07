@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 )
 
 type Detector struct {
