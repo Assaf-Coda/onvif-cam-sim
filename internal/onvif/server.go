@@ -11,6 +11,7 @@ import (
 
 	"github.com/assafhalevy/onvif-cam-sim/internal/camera"
 	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/assafhalevy/onvif-cam-sim/internal/httpauth"
 )
 
 type handler func(*request) (string, error)
@@ -101,7 +102,7 @@ func (s *Server) serveSOAP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if r.ContentLength == 0 && r.Header.Get("Authorization") == "" {
 			// HTTP Digest clients (curl, some VMS) first send an empty POST to get the challenge
-			challenge(w)
+			httpauth.Challenge(w)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -123,9 +124,9 @@ func (s *Server) serveSOAP(w http.ResponseWriter, r *http.Request) {
 		writeFault(w, req.MessageID, faultActionNotSupported(req.Action))
 		return
 	}
-	if !s.noAuth[req.Action] && !req.authenticated(s.users) && !httpAuthorized(r, s.users) {
+	if !s.noAuth[req.Action] && !req.authenticated(s.users) && !httpauth.Authorized(r, s.users) {
 		if !req.hasToken && r.Header.Get("Authorization") == "" {
-			challenge(w)
+			httpauth.Challenge(w)
 			writeFault(w, req.MessageID, &soapFault{401, "Sender", "ter:NotAuthorized", "Authentication required"})
 			return
 		}
@@ -146,8 +147,8 @@ func (s *Server) serveSOAP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
-	if !httpAuthorized(r, s.users) {
-		challenge(w)
+	if !httpauth.Authorized(r, s.users) {
+		httpauth.Challenge(w)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

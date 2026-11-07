@@ -1,0 +1,39 @@
+# ONVIF camera simulator configuration.
+# Copy to config.yaml and edit. Zones can also be drawn in the admin page and are saved back here.
+
+listen_ip: 0.0.0.0        # address to bind all services to
+advertised_ip: ""         # IP written into ONVIF XAddrs and stream URIs; empty = auto-detect
+admin_port: 8000          # admin page and JSON API (same credentials as below)
+ffmpeg_path: ffmpeg       # ffmpeg and ffprobe must be installed on the host
+ffprobe_path: ffprobe
+
+users:                    # used for ONVIF (WS-UsernameToken or HTTP digest), RTSP and the admin page
+  - name: admin
+    password: admin
+
+cameras:
+  - name: lobby                      # letters, digits, dashes; no spaces
+    source: ./media/lobby.mp4        # MP4/MOV with H.264 or H.265 video, or an rtsp:// URL to relay
+    loop: true                       # files only
+    onvif_port: 8081                 # one ONVIF HTTP port per camera
+    rtsp_port: 8554                  # one RTSP port per camera; UDP RTP uses 2*port and 2*port+1
+    manufacturer: SimCam
+    model: S-1
+    firmware: 1.0.0
+    serial: SIM-0001
+    motion:
+      enabled: true
+      sensitivity: 0.02              # fraction of zone pixels that must change to trigger motion
+      pixel_threshold: 25            # per-pixel gray difference (0-255) counted as a change
+      hold_seconds: 3                # motion stays on this long after the last change
+      analysis_width: 320            # decoded frame width used for motion analysis and snapshots
+      analysis_fps: 5
+      include:                       # polygons in normalized 0..1 coordinates; motion is counted inside
+        - [[0, 0], [1, 0], [1, 1], [0, 1]]
+      exclude:                       # polygons where motion is ignored
+        - [[0.7, 0], [1, 0], [1, 0.3], [0.7, 0.3]]
+
+  - name: gate
+    source: rtsp://user:pass@192.168.1.50:554/stream1   # live RTSP source, re-streamed as an ONVIF camera
+    onvif_port: 8082
+    rtsp_port: 8555

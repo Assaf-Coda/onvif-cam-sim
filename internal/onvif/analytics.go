@@ -19,7 +19,7 @@ func polygonXML(poly []config.Point) string {
 }
 
 func (s *Server) rulesXML() string {
-	m := s.cam.Cfg.Motion
+	m := s.cam.MotionCfg()
 	var b strings.Builder
 	// the cell motion rule carries the sensitivity and hold time; it is what the events refer to
 	b.WriteString(fmt.Sprintf(`<tt:Rule Name="%s" Type="tt:CellMotionDetector"><tt:Parameters><tt:SimpleItem Name="MinCount" Value="%d"/><tt:SimpleItem Name="AlarmOnDelay" Value="0"/><tt:SimpleItem Name="AlarmOffDelay" Value="%d"/><tt:SimpleItem Name="ActiveCells" Value="0P8A8A=="/></tt:Parameters></tt:Rule>`,
@@ -37,12 +37,12 @@ func (s *Server) rulesXML() string {
 
 func (s *Server) modulesXML() string {
 	return fmt.Sprintf(`<tt:AnalyticsModule Name="MotionEngine" Type="tt:CellMotionEngine"><tt:Parameters><tt:SimpleItem Name="Sensitivity" Value="%d"/><tt:ElementItem Name="Layout"><tt:CellLayout Columns="%d" Rows="%d"><tt:Transformation><tt:Translate x="-1.0" y="-1.0"/><tt:Scale x="%.6f" y="%.6f"/></tt:Transformation></tt:CellLayout></tt:ElementItem></tt:Parameters></tt:AnalyticsModule>`,
-		int(100-min(100, s.cam.Cfg.Motion.Sensitivity*1000)), 32, 18, 2.0/32, 2.0/18)
+		int(100-min(100, s.cam.MotionCfg().Sensitivity*1000)), 32, 18, 2.0/32, 2.0/18)
 }
 
 // analyticsConfig is the VideoAnalyticsConfiguration embedded in the media profile.
 func (s *Server) analyticsConfig() string {
-	if !s.cam.Cfg.Motion.IsEnabled() {
+	if !s.cam.MotionCfg().IsEnabled() {
 		return ""
 	}
 	return `<tt:VideoAnalyticsConfiguration token="` + tokVA + `"><tt:Name>MotionAnalytics</tt:Name><tt:UseCount>1</tt:UseCount>` +

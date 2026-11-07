@@ -1,4 +1,5 @@
-package onvif
+// Package httpauth verifies HTTP Basic and Digest credentials against the configured users.
+package httpauth
 
 import (
 	"crypto/md5"
@@ -13,11 +14,11 @@ import (
 	"github.com/assafhalevy/onvif-cam-sim/internal/config"
 )
 
-const realm = "onvif-cam-sim"
+const Realm = "onvif-cam-sim"
 
 // httpAuthorized verifies an HTTP Basic or Digest Authorization header.
 // ponytail: the client's nonce is trusted as-is (no nonce tracking), enough for a simulator.
-func httpAuthorized(r *http.Request, users []config.User) bool {
+func Authorized(r *http.Request, users []config.User) bool {
 	h := r.Header.Get("Authorization")
 	switch {
 	case strings.HasPrefix(h, "Basic "):
@@ -51,11 +52,11 @@ func httpAuthorized(r *http.Request, users []config.User) bool {
 	return false
 }
 
-func challenge(w http.ResponseWriter) {
+func Challenge(w http.ResponseWriter) {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
-	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Digest realm="%s", nonce="%s", qop="auth", algorithm=MD5`, realm, hex.EncodeToString(b[:])))
-	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, realm))
+	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Digest realm="%s", nonce="%s", qop="auth", algorithm=MD5`, Realm, hex.EncodeToString(b[:])))
+	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, Realm))
 }
 
 func parseDigest(s string) map[string]string {

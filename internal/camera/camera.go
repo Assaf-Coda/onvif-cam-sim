@@ -23,7 +23,8 @@ type Camera struct {
 	UUID   string
 	Motion *motion.Detector
 
-	info atomic.Pointer[source.Info]
+	info      atomic.Pointer[source.Info]
+	motionCfg atomic.Pointer[config.Motion]
 
 	mu      sync.Mutex
 	rgb     []byte
@@ -32,7 +33,19 @@ type Camera struct {
 }
 
 func New(cfg config.Camera) *Camera {
-	return &Camera{Cfg: cfg, UUID: newUUID(), Motion: motion.New(cfg.Motion)}
+	c := &Camera{Cfg: cfg, UUID: newUUID(), Motion: motion.New(cfg.Motion)}
+	m := cfg.Motion
+	c.motionCfg.Store(&m)
+	return c
+}
+
+// MotionCfg returns the current motion configuration (zones may change at runtime).
+func (c *Camera) MotionCfg() config.Motion { return *c.motionCfg.Load() }
+
+// SetMotionCfg replaces the motion configuration and reconfigures the detector.
+func (c *Camera) SetMotionCfg(m config.Motion) {
+	c.motionCfg.Store(&m)
+	c.Motion.Configure(m)
 }
 
 // SetInfo records the probed source description.
@@ -57,7 +70,7 @@ func (c *Camera) OnFrame(rgb []byte, w, h int) {
 	c.w, c.h = w, h
 	c.frameAt = time.Now()
 	c.mu.Unlock()
-	if c.Cfg.Motion.IsEnabled() {
+	if c.MotionCfg().IsEnabled() {
 		c.Motion.Feed(rgb, w, h, time.Now())
 	}
 }

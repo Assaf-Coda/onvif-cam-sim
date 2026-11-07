@@ -75,16 +75,15 @@ assert r.status_code == 200 and r.content[:2] == b"\xff\xd8", "snapshot is not a
 
 if a.events:
     ev = cam.create_events_service()
-    print("topics:", [t for t in ev.GetEventProperties().TopicSet._value_1.__dict__ if not t.startswith("_")] if False else "ok")
+    ev.GetEventProperties()
     sub = ev.CreatePullPointSubscription({"InitialTerminationTime": "PT60S"})
-    pp = cam.create_pullpoint_service()
     cam.xaddrs["http://www.onvif.org/ver10/events/wsdl/PullPointSubscription"] = sub.SubscriptionReference.Address._value_1
     pp = cam.create_pullpoint_service()
     deadline = time.time() + a.events
     while time.time() < deadline:
         msgs = pp.PullMessages({"Timeout": "PT5S", "MessageLimit": 10})
         for m in msgs.NotificationMessage:
-            topic = m.Topic._value_1
+            topic = (m.Topic._value_1 or "").strip() if hasattr(m.Topic, "_value_1") else ""
             msg = m.Message._value_1
             op = msg.get("PropertyOperation")
             data = [(d.get("Name"), d.get("Value")) for d in msg.find("{http://www.onvif.org/ver10/schema}Data")] if msg.find("{http://www.onvif.org/ver10/schema}Data") is not None else []

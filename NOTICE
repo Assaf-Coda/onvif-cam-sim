@@ -1,0 +1,19 @@
+onvif-cam-sim is licensed under the MIT License (see LICENSE).
+
+Runtime dependency, not bundled:
+  FFmpeg (ffmpeg, ffprobe) - LGPL-2.1-or-later, https://ffmpeg.org/legal.html
+  Used unmodified as a separate process. Install an LGPL build or your distribution's package.
+
+Go module dependencies (see go.mod / go.sum):
+  github.com/bluenviron/gortsplib/v5      MIT
+  github.com/bluenviron/mediacommon/v2    MIT
+  github.com/pion/rtp, rtcp, sdp, srtp,
+  transport, randutil, logging            MIT
+  gopkg.in/yaml.v3                        MIT and Apache-2.0
+  github.com/google/uuid (indirect)       BSD-3-Clause
+  github.com/gorilla/websocket (indirect) BSD-2-Clause
+  golang.org/x/net, golang.org/x/sys      BSD-3-Clause
+  Go standard library and toolchain       BSD-3-Clause
+
+The WS-Discovery packet handling was written with reference to
+github.com/smford/onvif-camera-simulator (MIT, Stephen Ford).

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/assafhalevy/onvif-cam-sim/internal/onvif"
 	"github.com/assafhalevy/onvif-cam-sim/internal/rtsp"
 	"github.com/assafhalevy/onvif-cam-sim/internal/source"
+	"github.com/assafhalevy/onvif-cam-sim/internal/web"
 )
 
 func main() {
@@ -35,6 +37,12 @@ func main() {
 	if err != nil {
 		log.Error("config", "err", err)
 		os.Exit(1)
+	}
+	for _, bin := range []string{cfg.FFmpegPath, cfg.FFprobePath} {
+		if _, err := exec.LookPath(bin); err != nil {
+			log.Error("ffmpeg is required: install it (brew install ffmpeg, apt install ffmpeg, winget install ffmpeg) or set ffmpeg_path/ffprobe_path in the config", "missing", bin)
+			os.Exit(1)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -67,6 +75,8 @@ func main() {
 	}
 
 	var devices []discovery.Device
+	var camList []*camera.Camera
+	rtspByCam := map[*camera.Camera]*rtsp.Server{}
 	for _, cr := range cams {
 		clog := log.With("camera", cr.cfg.Name)
 		cam := camera.New(cr.cfg)
@@ -79,6 +89,8 @@ func main() {
 			os.Exit(1)
 		}
 		defer rs.Close()
+		camList = append(camList, cam)
+		rtspByCam[cam] = rs
 		osrv := onvif.New(clog, cam, cfg.Users, cfg.ListenIP, cfg.AdvertisedIP, rtsp.Path)
 		if err := osrv.Start(); err != nil {
 			log.Error("onvif listen", "camera", cr.cfg.Name, "err", err)
@@ -103,6 +115,18 @@ func main() {
 		go cam.RunMotionTicker(ctx)
 		clog.Info("camera up", "onvif", osrv.XAddr("device_service"), "rtsp", fmt.Sprintf("rtsp://%s:%d/%s", cfg.AdvertisedIP, cr.cfg.RTSPPort, rtsp.Path))
 	}
+
+	admin := web.New(log, cfg, *cfgPath, camList, func(c *camera.Camera) (bool, int) {
+		rs := rtspByCam[c]
+		return rs.Live(), rs.Readers()
+	})
+	if err := admin.Start(); err != nil {
+		log.Error("admin listen", "err", err)
+		stop()
+		return
+	}
+	defer admin.Close()
+	log.Info("admin UI", "url", fmt.Sprintf("http://%s:%d/", cfg.AdvertisedIP, cfg.AdminPort))
 
 	go func() {
 		if err := discovery.New(log, devices).Run(ctx); err != nil {

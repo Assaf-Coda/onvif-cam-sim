@@ -1,3 +1,5 @@
 media/
-*.tmp
 bin/
+dist/
+config.yaml
+*.tmp

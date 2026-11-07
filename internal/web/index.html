@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ONVIF Camera Simulator</title>
+<style>
+  :root { --bg:#111; --panel:#1c1c1c; --fg:#e6e6e6; --muted:#8a8a8a; --inc:#3ddc84; --exc:#ff5c5c; --accent:#4ea1ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:10px 16px; border-bottom:1px solid #2a2a2a; display:flex; gap:16px; align-items:center; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  main { display:grid; grid-template-columns:260px 1fr; min-height:calc(100vh - 45px); }
+  aside { background:var(--panel); border-right:1px solid #2a2a2a; padding:8px; }
+  .cam { padding:8px 10px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+  .cam:hover { background:#262626; } .cam.sel { background:#2b3a4d; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#555; display:inline-block; margin-right:6px; }
+  .dot.live { background:var(--inc); } .dot.motion { background:#ffc83d; box-shadow:0 0 8px #ffc83d; }
+  .small { color:var(--muted); font-size:12px; }
+  section { padding:16px; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  button { background:#2a2a2a; color:var(--fg); border:1px solid #3a3a3a; border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button:hover { background:#333; } button.on { border-color:var(--accent); color:var(--accent); }
+  button.inc.on { border-color:var(--inc); color:var(--inc); } button.exc.on { border-color:var(--exc); color:var(--exc); }
+  button.primary { background:var(--accent); color:#000; border-color:var(--accent); }
+  #wrap { position:relative; max-width:960px; background:#000; border:1px solid #2a2a2a; }
+  #wrap canvas { width:100%; display:block; cursor:crosshair; }
+  #status { margin-top:8px; }
+  code { background:#222; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header><h1>ONVIF Camera Simulator</h1><span class="small" id="hint">Click to add polygon points, double-click to close the polygon. Save writes config.yaml and applies at once.</span></header>
+<main>
+  <aside id="list"></aside>
+  <section>
+    <div class="toolbar">
+      <button id="modeInc" class="inc on">Draw include zone</button>
+      <button id="modeExc" class="exc">Draw exclude zone</button>
+      <button id="undo">Undo point</button>
+      <button id="clear">Clear all zones</button>
+      <button id="save" class="primary">Save</button>
+      <span id="msg" class="small"></span>
+    </div>
+    <div id="wrap"><canvas id="c" width="960" height="540"></canvas></div>
+    <div id="status" class="small"></div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let cams = [], sel = null, zones = {include:[], exclude:[]}, draft = [], mode = 'include', img = new Image(), dirty = false;
+const cv = $('#c'), ctx = cv.getContext('2d');
+
+async function refresh() {
+  const r = await fetch('/api/cameras'); if (!r.ok) return;
+  cams = await r.json();
+  if (!sel && cams.length) select(cams[0].name, true);
+  renderList();
+  const c = cams.find(x => x.name === sel);
+  if (c) $('#status').innerHTML =
+    `<b>${c.name}</b> &nbsp; ${c.codec} ${c.width}x${c.height} &nbsp; ONVIF <code>http://${location.hostname}:${c.onvif_port}/onvif/device_service</code> &nbsp; RTSP <code>rtsp://${location.hostname}:${c.rtsp_port}/stream</code>` +
+    `<br>motion: <b>${c.motion ? 'ACTIVE' : 'idle'}</b> (changed ${(c.motion_ratio*100).toFixed(2)}%, trigger ${(c.settings.sensitivity*100).toFixed(2)}%, hold ${c.settings.hold_seconds}s) &nbsp; stream ${c.live ? 'live' : 'down'}, ${c.readers} reader(s)`;
+}
+function renderList() {
+  $('#list').innerHTML = cams.map(c => `<div class="cam ${c.name===sel?'sel':''}" data-n="${c.name}">
+    <span><span class="dot ${c.motion?'motion':(c.live?'live':'')}"></span>${c.name}</span><span class="small">${c.motion?'motion':''}</span></div>`).join('');
+  document.querySelectorAll('.cam').forEach(el => el.onclick = () => select(el.dataset.n));
+}
+function select(name, force) {
+  if (!force && dirty && !confirm('Discard unsaved zone changes?')) return;
+  sel = name; dirty = false; draft = [];
+  const c = cams.find(x => x.name === name);
+  zones = {include: c.zones.include.map(p => p.slice()), exclude: c.zones.exclude.map(p => p.slice())};
+  renderList(); loadImg(); draw();
+}
+function loadImg() { if (!sel) return; const i = new Image(); i.onload = () => { img = i; draw(); }; i.src = `/api/cameras/${sel}/snapshot.jpg?t=${Date.now()}`; }
+function draw() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (img.width) ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  const poly = (pts, color, close, fill) => {
+    if (!pts.length) return; ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(p[0]*cv.width, p[1]*cv.height) : ctx.moveTo(p[0]*cv.width, p[1]*cv.height));
+    if (close) ctx.closePath();
+    ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.stroke();
+    if (fill) { ctx.fillStyle = color + '33'; ctx.fill(); }
+    pts.forEach(p => { ctx.beginPath(); ctx.arc(p[0]*cv.width, p[1]*cv.height, 4, 0, 7); ctx.fillStyle = color; ctx.fill(); });
+  };
+  zones.include.forEach(z => poly(z, '#3ddc84', true, true));
+  zones.exclude.forEach(z => poly(z, '#ff5c5c', true, true));
+  poly(draft, mode === 'include' ? '#3ddc84' : '#ff5c5c', false, false);
+}
+function pt(e) { const r = cv.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX-r.left)/r.width)), Math.min(1, Math.max(0, (e.clientY-r.top)/r.height))]; }
+cv.onclick = e => { if (e.detail > 1) return; draft.push(pt(e).map(v => +v.toFixed(4))); draw(); };
+cv.ondblclick = e => { e.preventDefault(); if (draft.length >= 3) { zones[mode].push(draft); dirty = true; } draft = []; draw(); };
+$('#modeInc').onclick = () => { mode = 'include'; draft = []; $('#modeInc').classList.add('on'); $('#modeExc').classList.remove('on'); draw(); };
+$('#modeExc').onclick = () => { mode = 'exclude'; draft = []; $('#modeExc').classList.add('on'); $('#modeInc').classList.remove('on'); draw(); };
+$('#undo').onclick = () => { if (draft.length) draft.pop(); else { zones[mode].pop(); dirty = true; } draw(); };
+$('#clear').onclick = () => { zones = {include:[], exclude:[]}; draft = []; dirty = true; draw(); };
+$('#save').onclick = async () => {
+  const r = await fetch(`/api/cameras/${sel}/zones`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(zones)});
+  $('#msg').textContent = r.ok ? 'Saved to config.yaml' : 'Save failed: ' + await r.text();
+  if (r.ok) { dirty = false; await refresh(); select(sel, true); }
+  setTimeout(() => $('#msg').textContent = '', 4000);
+};
+refresh(); setInterval(refresh, 1000); setInterval(loadImg, 2000);
+</script>
+</body>
+</html>
