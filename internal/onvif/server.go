@@ -2,6 +2,7 @@ package onvif
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,20 +19,25 @@ type handler func(*request) (string, error)
 
 // Server serves the ONVIF services of one camera on its own HTTP port.
 type Server struct {
-	log      *slog.Logger
-	cam      *camera.Camera
-	users    []config.User
-	ip       string // advertised IP
-	port     int    // ONVIF HTTP port
-	rtspPort int
-	rtspPath string
-	http     *http.Server
-	handlers map[string]handler // "namespace|Action" or "Action"
-	noAuth   map[string]bool
-	events   *eventBus
+	log       *slog.Logger
+	cam       *camera.Camera
+	users     []config.User
+	ip        string // advertised IP
+	port      int    // ONVIF HTTP port
+	httpsPort int    // 0 = no HTTPS listener
+	rtspPort  int
+	rtspPath  string
+	http      *http.Server
+	https     *http.Server
+	handlers  map[string]handler // "namespace|Action" or "Action"
+	noAuth    map[string]bool
+	events    *eventBus
 }
 
-func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, advertisedIP string, rtspPath string) *Server {
+// New builds the ONVIF server for cam. When tlsCfg is non-nil and the camera has
+// an onvif_https_port, the same services are also served over HTTPS; XAddrs and
+// URIs in responses use the scheme and port the request arrived on.
+func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, advertisedIP string, rtspPath string, tlsCfg *tls.Config) *Server {
 	s := &Server{
 		log:      log,
 		cam:      cam,
@@ -63,6 +69,15 @@ func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, ad
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if tlsCfg != nil && cam.Cfg.OnvifHTTPSPort > 0 {
+		s.httpsPort = cam.Cfg.OnvifHTTPSPort
+		s.https = &http.Server{
+			Addr:              fmt.Sprintf("%s:%d", listenIP, s.httpsPort),
+			Handler:           mux,
+			TLSConfig:         tlsCfg,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+	}
 	return s
 }
 
@@ -76,6 +91,18 @@ func (s *Server) Start() error {
 			s.log.Error("onvif http", "err", err)
 		}
 	}()
+	if s.https != nil {
+		tln, err := listen(s.https.Addr)
+		if err != nil {
+			ln.Close()
+			return err
+		}
+		go func() {
+			if err := s.https.Serve(tls.NewListener(tln, s.https.TLSConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.log.Error("onvif https", "err", err)
+			}
+		}()
+	}
 	return nil
 }
 
@@ -83,11 +110,35 @@ func (s *Server) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = s.http.Shutdown(ctx)
+	if s.https != nil {
+		_ = s.https.Shutdown(ctx)
+	}
 }
 
+// XAddr is the HTTP address of a service, used for WS-Discovery and logs.
 func (s *Server) XAddr(service string) string {
 	return fmt.Sprintf("http://%s:%d/onvif/%s", s.ip, s.port, service)
 }
+
+// XAddrs lists the HTTP and, when enabled, HTTPS device service addresses for WS-Discovery.
+func (s *Server) XAddrs() string {
+	out := s.XAddr("device_service")
+	if s.httpsPort > 0 {
+		out += fmt.Sprintf(" https://%s:%d/onvif/device_service", s.ip, s.httpsPort)
+	}
+	return out
+}
+
+// base returns scheme://ip:port matching how the request arrived, so a client
+// that connected over HTTPS keeps getting HTTPS addresses back.
+func (s *Server) base(r *request) string {
+	if r != nil && r.HTTP != nil && r.HTTP.TLS != nil && s.httpsPort > 0 {
+		return fmt.Sprintf("https://%s:%d", s.ip, s.httpsPort)
+	}
+	return fmt.Sprintf("http://%s:%d", s.ip, s.port)
+}
+
+func (s *Server) addr(r *request, service string) string { return s.base(r) + "/onvif/" + service }
 
 func (s *Server) on(ns, action string, h handler) {
 	s.handlers[ns+"|"+action] = h

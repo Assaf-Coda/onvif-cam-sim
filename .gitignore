@@ -3,3 +3,5 @@ bin/
 dist/
 config.yaml
 *.tmp
+cert.pem
+key.pem

@@ -43,16 +43,16 @@ func (s *Server) registerDevice() {
 		return fmt.Sprintf(`<tds:GetDeviceInformationResponse><tds:Manufacturer>%s</tds:Manufacturer><tds:Model>%s</tds:Model><tds:FirmwareVersion>%s</tds:FirmwareVersion><tds:SerialNumber>%s</tds:SerialNumber><tds:HardwareId>%s</tds:HardwareId></tds:GetDeviceInformationResponse>`,
 			esc(c.Manufacturer), esc(c.Model), esc(c.Firmware), esc(c.Serial), esc(c.Model)), nil
 	})
-	s.on(d, "GetCapabilities", func(_ *request) (string, error) {
+	s.on(d, "GetCapabilities", func(r *request) (string, error) {
 		return `<tds:GetCapabilitiesResponse><tds:Capabilities>` +
-			`<tt:Analytics><tt:XAddr>` + s.XAddr("analytics_service") + `</tt:XAddr><tt:RuleSupport>true</tt:RuleSupport><tt:AnalyticsModuleSupport>true</tt:AnalyticsModuleSupport></tt:Analytics>` +
-			`<tt:Device><tt:XAddr>` + s.XAddr("device_service") + `</tt:XAddr>` +
+			`<tt:Analytics><tt:XAddr>` + s.addr(r, "analytics_service") + `</tt:XAddr><tt:RuleSupport>true</tt:RuleSupport><tt:AnalyticsModuleSupport>true</tt:AnalyticsModuleSupport></tt:Analytics>` +
+			`<tt:Device><tt:XAddr>` + s.addr(r, "device_service") + `</tt:XAddr>` +
 			`<tt:Network><tt:IPFilter>false</tt:IPFilter><tt:ZeroConfiguration>false</tt:ZeroConfiguration><tt:IPVersion6>false</tt:IPVersion6><tt:DynDNS>false</tt:DynDNS></tt:Network>` +
 			`<tt:System><tt:DiscoveryResolve>false</tt:DiscoveryResolve><tt:DiscoveryBye>true</tt:DiscoveryBye><tt:RemoteDiscovery>false</tt:RemoteDiscovery><tt:SystemBackup>false</tt:SystemBackup><tt:SystemLogging>false</tt:SystemLogging><tt:FirmwareUpgrade>false</tt:FirmwareUpgrade><tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>60</tt:Minor></tt:SupportedVersions></tt:System>` +
 			`<tt:IO><tt:InputConnectors>0</tt:InputConnectors><tt:RelayOutputs>0</tt:RelayOutputs></tt:IO>` +
-			`<tt:Security><tt:TLS1.1>false</tt:TLS1.1><tt:TLS1.2>false</tt:TLS1.2><tt:OnboardKeyGeneration>false</tt:OnboardKeyGeneration><tt:AccessPolicyConfig>false</tt:AccessPolicyConfig><tt:X.509Token>false</tt:X.509Token><tt:SAMLToken>false</tt:SAMLToken><tt:KerberosToken>false</tt:KerberosToken><tt:RELToken>false</tt:RELToken></tt:Security></tt:Device>` +
-			`<tt:Events><tt:XAddr>` + s.XAddr("events_service") + `</tt:XAddr><tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport><tt:WSPullPointSupport>true</tt:WSPullPointSupport><tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport></tt:Events>` +
-			`<tt:Media><tt:XAddr>` + s.XAddr("media_service") + `</tt:XAddr><tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities><tt:Extension><tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>1</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities></tt:Extension></tt:Media>` +
+			`<tt:Security><tt:TLS1.1>false</tt:TLS1.1><tt:TLS1.2>` + fmt.Sprint(s.httpsPort > 0) + `</tt:TLS1.2><tt:OnboardKeyGeneration>false</tt:OnboardKeyGeneration><tt:AccessPolicyConfig>false</tt:AccessPolicyConfig><tt:X.509Token>false</tt:X.509Token><tt:SAMLToken>false</tt:SAMLToken><tt:KerberosToken>false</tt:KerberosToken><tt:RELToken>false</tt:RELToken></tt:Security></tt:Device>` +
+			`<tt:Events><tt:XAddr>` + s.addr(r, "events_service") + `</tt:XAddr><tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport><tt:WSPullPointSupport>true</tt:WSPullPointSupport><tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport></tt:Events>` +
+			`<tt:Media><tt:XAddr>` + s.addr(r, "media_service") + `</tt:XAddr><tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities><tt:Extension><tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>1</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities></tt:Extension></tt:Media>` +
 			`</tds:Capabilities></tds:GetCapabilitiesResponse>`, nil
 	})
 	s.on(d, "GetServices", func(r *request) (string, error) {
@@ -61,7 +61,7 @@ func (s *Server) registerDevice() {
 		}
 		r.param(&p)
 		svc := func(ns, path string, major, minor int, capXML string) string {
-			out := `<tds:Service><tds:Namespace>` + ns + `</tds:Namespace><tds:XAddr>` + s.XAddr(path) + `</tds:XAddr>`
+			out := `<tds:Service><tds:Namespace>` + ns + `</tds:Namespace><tds:XAddr>` + s.addr(r, path) + `</tds:XAddr>`
 			if p.IncludeCapability && capXML != "" {
 				out += `<tds:Capabilities>` + capXML + `</tds:Capabilities>`
 			}

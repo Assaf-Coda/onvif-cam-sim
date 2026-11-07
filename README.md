@@ -30,7 +30,9 @@ cp config.example.yaml config.yaml      # edit sources, ports and credentials
 ./bin/onvif-cam-sim                     # runs all cameras
 ```
 
-Then open `http://<host>:8000/` with the configured user to see the cameras, their motion state and the zone editor. Add a camera to your VMS either by ONVIF discovery or manually with the host IP, the camera's `onvif_port`, and the configured user and password.
+Then open `http://<host>:8000/` or `https://<host>:8443/` with the configured user to see the cameras, their motion state and the zone editor. The same page adds and removes cameras at runtime: upload an MP4 or MOV clip or enter an RTSP URL with its port, and the camera starts immediately, is announced on WS-Discovery, and is written to `config.yaml`. Uploaded clips are stored in `media_dir` and deleted again when the camera is removed. Add a camera to your VMS either by ONVIF discovery or manually with the host IP, the camera's `onvif_port` (or `onvif_https_port`), and the configured user and password.
+
+The config file may start with an empty `cameras` list if you prefer to add everything from the page.
 
 Flags: `-config path` (default `config.yaml`), `-check`, `-debug`.
 
@@ -42,20 +44,25 @@ See `config.example.yaml`; every key is commented there. The essentials per came
 |---|---|
 | `source` | File path (MP4/MOV, H.264 or H.265) or an `rtsp://` URL to relay |
 | `onvif_port`, `rtsp_port` | Unique ports per camera. UDP RTP uses `2*rtsp_port` and `2*rtsp_port+1` |
+| `onvif_https_port` | HTTPS port for the same ONVIF services, default `onvif_port + 1000`; set to `-1` to disable |
 | `motion.sensitivity` | Fraction of zone pixels that must change between analysed frames to trigger motion (0.02 = 2 percent) |
 | `motion.pixel_threshold` | Per-pixel gray difference (0 to 255) that counts as a change |
 | `motion.hold_seconds` | How long motion stays active after the last detected change |
 | `motion.include`, `motion.exclude` | Polygons in normalized 0..1 coordinates. Include defaults to the full frame |
 
-Saving zones from the admin page rewrites `config.yaml`; comments in that file are not preserved.
+Saving zones or adding and removing cameras from the admin page rewrites `config.yaml`; comments in that file are not preserved.
+
+### HTTPS
+
+Every ONVIF port has an HTTPS twin (`onvif_https_port`) and the admin page has `admin_https_port` (default 8443, `-1` disables). Authentication is the same as over HTTP: WS-UsernameToken or HTTP Digest with the configured users. Responses follow the scheme the request came in on, so a VMS that connects over HTTPS receives HTTPS XAddrs, snapshot URI and subscription addresses, and WS-Discovery lists both addresses. On first start a self-signed certificate is generated with the standard library and written to `tls_cert` and `tls_key` (default `cert.pem` and `key.pem` next to the config); its subject alternative names cover `advertised_ip`, `127.0.0.1`, `localhost` and the hostname, and it is marked as a CA so a VMS can import `cert.pem` directly as a trust anchor. Point `tls_cert` and `tls_key` at your own PEM files to use a different certificate. RTSP itself stays plain, as Profile S specifies.
 
 ## What a VMS sees
 
 | Item | Value |
 |---|---|
-| Device service | `http://<ip>:<onvif_port>/onvif/device_service` (Media, Events and Analytics services on the same port) |
+| Device service | `http://<ip>:<onvif_port>/onvif/device_service` or `https://<ip>:<onvif_https_port>/onvif/device_service` (Media, Events and Analytics services on the same port) |
 | Stream | `rtsp://<ip>:<rtsp_port>/stream`, RTSP over TCP or UDP, Basic or Digest auth |
-| Snapshot | `http://<ip>:<onvif_port>/snapshot.jpg`, Basic or Digest auth |
+| Snapshot | `http://<ip>:<onvif_port>/snapshot.jpg` (or the HTTPS equivalent), Basic or Digest auth |
 | Profile | One fixed profile `prof_main` with video, audio (if the source has it) and a video analytics configuration |
 | Events | PullPoint subscription; properties `IsMotion` and `State` with Initialized and Changed operations |
 | Analytics | `GetRules` returns the cell motion rule and one `MotionRegionDetector` rule per zone (exclude zones are reported as disarmed) |

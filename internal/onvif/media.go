@@ -168,6 +168,6 @@ func (s *Server) registerMedia() {
 		if err := checkProfile(r); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf(`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>http://%s:%d/snapshot.jpg</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT60S</tt:Timeout></trt:MediaUri></trt:GetSnapshotUriResponse>`, s.ip, s.port), nil
+		return fmt.Sprintf(`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>%s/snapshot.jpg</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT60S</tt:Timeout></trt:MediaUri></trt:GetSnapshotUriResponse>`, s.base(r)), nil
 	})
 }

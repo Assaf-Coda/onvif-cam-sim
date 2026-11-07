@@ -1,15 +1,22 @@
-// Package web serves the admin page (zone editor) and its small JSON API.
+// Package web serves the admin page (camera list, zone editor, add/remove camera)
+// and its small JSON API, over HTTP and optionally HTTPS.
 package web
 
 import (
 	"context"
+	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
-	"sync"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
@@ -20,39 +27,67 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
-// Status is provided by main so the page can show whether the stream is live.
-type Status func(cam *camera.Camera) (live bool, readers int)
+// maxUpload caps a clip upload. ponytail: fixed 8 GiB; make it a config key if anyone hits it.
+const maxUpload = 8 << 30
 
-type Server struct {
-	log     *slog.Logger
-	cfg     *config.Config
-	cfgPath string
-	cams    []*camera.Camera
-	status  Status
-	http    *http.Server
-	saveMu  sync.Mutex
+// Controller is what main provides: the running cameras and the operations on them.
+type Controller interface {
+	Cameras() []*camera.Camera
+	Status(c *camera.Camera) (live bool, readers int)
+	Add(c config.Camera) (*camera.Camera, error)
+	Remove(name string) error
+	SaveZones(c *camera.Camera, m config.Motion) error
 }
 
-func New(log *slog.Logger, cfg *config.Config, cfgPath string, cams []*camera.Camera, status Status) *Server {
-	s := &Server{log: log, cfg: cfg, cfgPath: cfgPath, cams: cams, status: status}
+type Server struct {
+	log   *slog.Logger
+	cfg   *config.Config
+	ctl   Controller
+	http  *http.Server
+	https *http.Server
+}
+
+func New(log *slog.Logger, cfg *config.Config, ctl Controller, tlsCfg *tls.Config) *Server {
+	s := &Server{log: log, cfg: cfg, ctl: ctl}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.auth(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(indexHTML)
 	}))
 	mux.HandleFunc("GET /api/cameras", s.auth(s.listCameras))
+	mux.HandleFunc("POST /api/cameras", s.auth(s.addCamera))
+	mux.HandleFunc("DELETE /api/cameras/{name}", s.auth(s.removeCamera))
 	mux.HandleFunc("GET /api/cameras/{name}/snapshot.jpg", s.auth(s.snapshot))
 	mux.HandleFunc("PUT /api/cameras/{name}/zones", s.auth(s.putZones))
 	s.http = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.AdminPort), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	if tlsCfg != nil && cfg.AdminHTTPSPort > 0 {
+		s.https = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.AdminHTTPSPort), Handler: mux, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second}
+	}
 	return s
 }
 
 func (s *Server) Start() error {
+	ln, err := net.Listen("tcp", s.http.Addr)
+	if err != nil {
+		return err
+	}
 	go func() {
-		if err := s.http.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := s.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.log.Error("admin http", "err", err)
 		}
 	}()
+	if s.https != nil {
+		tln, err := net.Listen("tcp", s.https.Addr)
+		if err != nil {
+			ln.Close()
+			return err
+		}
+		go func() {
+			if err := s.https.Serve(tls.NewListener(tln, s.https.TLSConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.log.Error("admin https", "err", err)
+			}
+		}()
+	}
 	return nil
 }
 
@@ -60,6 +95,9 @@ func (s *Server) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = s.http.Shutdown(ctx)
+	if s.https != nil {
+		_ = s.https.Shutdown(ctx)
+	}
 }
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
@@ -74,7 +112,7 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) find(name string) *camera.Camera {
-	for _, c := range s.cams {
+	for _, c := range s.ctl.Cameras() {
 		if c.Cfg.Name == name {
 			return c
 		}
@@ -83,20 +121,21 @@ func (s *Server) find(name string) *camera.Camera {
 }
 
 type cameraJSON struct {
-	Name        string         `json:"name"`
-	Source      string         `json:"source"`
-	OnvifPort   int            `json:"onvif_port"`
-	RTSPPort    int            `json:"rtsp_port"`
-	Codec       string         `json:"codec"`
-	Width       int            `json:"width"`
-	Height      int            `json:"height"`
-	Live        bool           `json:"live"`
-	Readers     int            `json:"readers"`
-	FrameAgeMs  int64          `json:"frame_age_ms"`
-	Motion      bool           `json:"motion"`
-	MotionRatio float64        `json:"motion_ratio"`
-	Zones       zonesJSON      `json:"zones"`
-	Settings    map[string]any `json:"settings"`
+	Name           string         `json:"name"`
+	Source         string         `json:"source"`
+	OnvifPort      int            `json:"onvif_port"`
+	OnvifHTTPSPort int            `json:"onvif_https_port"`
+	RTSPPort       int            `json:"rtsp_port"`
+	Codec          string         `json:"codec"`
+	Width          int            `json:"width"`
+	Height         int            `json:"height"`
+	Live           bool           `json:"live"`
+	Readers        int            `json:"readers"`
+	FrameAgeMs     int64          `json:"frame_age_ms"`
+	Motion         bool           `json:"motion"`
+	MotionRatio    float64        `json:"motion_ratio"`
+	Zones          zonesJSON      `json:"zones"`
+	Settings       map[string]any `json:"settings"`
 }
 
 type zonesJSON struct {
@@ -104,24 +143,28 @@ type zonesJSON struct {
 	Exclude [][]config.Point `json:"exclude"`
 }
 
-func (s *Server) listCameras(w http.ResponseWriter, _ *http.Request) {
-	out := make([]cameraJSON, 0, len(s.cams))
-	for _, c := range s.cams {
-		live, readers := s.status(c)
-		active, ratio := c.Motion.State()
-		info := c.Info()
-		m := c.MotionCfg()
-		out = append(out, cameraJSON{
-			Name: c.Cfg.Name, Source: c.Cfg.Source, OnvifPort: c.Cfg.OnvifPort, RTSPPort: c.Cfg.RTSPPort,
-			Codec: info.VideoCodec, Width: info.Width, Height: info.Height,
-			Live: live, Readers: readers, FrameAgeMs: c.LastFrameAge().Milliseconds(),
-			Motion: active, MotionRatio: ratio,
-			Zones:    zonesJSON{Include: nonNil(m.Include), Exclude: nonNil(m.Exclude)},
-			Settings: map[string]any{"enabled": m.IsEnabled(), "sensitivity": m.Sensitivity, "pixel_threshold": m.PixelThreshold, "hold_seconds": m.HoldSeconds},
-		})
+func (s *Server) toJSON(c *camera.Camera) cameraJSON {
+	live, readers := s.ctl.Status(c)
+	active, ratio := c.Motion.State()
+	info := c.Info()
+	m := c.MotionCfg()
+	return cameraJSON{
+		Name: c.Cfg.Name, Source: c.Cfg.Source, OnvifPort: c.Cfg.OnvifPort, OnvifHTTPSPort: c.Cfg.OnvifHTTPSPort, RTSPPort: c.Cfg.RTSPPort,
+		Codec: info.VideoCodec, Width: info.Width, Height: info.Height,
+		Live: live, Readers: readers, FrameAgeMs: c.LastFrameAge().Milliseconds(),
+		Motion: active, MotionRatio: ratio,
+		Zones:    zonesJSON{Include: nonNil(m.Include), Exclude: nonNil(m.Exclude)},
+		Settings: map[string]any{"enabled": m.IsEnabled(), "sensitivity": m.Sensitivity, "pixel_threshold": m.PixelThreshold, "hold_seconds": m.HoldSeconds},
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) listCameras(w http.ResponseWriter, _ *http.Request) {
+	cams := s.ctl.Cameras()
+	out := make([]cameraJSON, 0, len(cams))
+	for _, c := range cams {
+		out = append(out, s.toJSON(c))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func nonNil(z [][]config.Point) [][]config.Point {
@@ -129,6 +172,158 @@ func nonNil(z [][]config.Point) [][]config.Point {
 		return [][]config.Point{}
 	}
 	return z
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// addCamera accepts multipart/form-data: name, and either an rtsp:// "source" or
+// an uploaded "file"; optional onvif_port, rtsp_port, manufacturer, model, loop.
+// The upload is streamed into media_dir under a temporary name and renamed once
+// the whole form has been read.
+func (s *Server) addCamera(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, "expected multipart/form-data: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	fields := map[string]string{}
+	var tmpPath, origName string
+	cleanup := func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			cleanup()
+			http.Error(w, "upload: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if part.FormName() != "file" {
+			b, _ := io.ReadAll(io.LimitReader(part, 4096))
+			fields[part.FormName()] = strings.TrimSpace(string(b))
+			continue
+		}
+		if part.FileName() == "" {
+			continue // empty file input
+		}
+		origName = filepath.Base(part.FileName())
+		if err := os.MkdirAll(s.cfg.MediaDir, 0o755); err != nil {
+			http.Error(w, "media dir: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmp, err := os.CreateTemp(s.cfg.MediaDir, ".upload-*.tmp")
+		if err != nil {
+			http.Error(w, "media dir: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmpPath = tmp.Name()
+		_, err = io.Copy(tmp, part)
+		tmp.Close()
+		if err != nil {
+			cleanup()
+			http.Error(w, "upload: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	c := config.Camera{
+		Name:         fields["name"],
+		Source:       fields["source"],
+		Manufacturer: fields["manufacturer"],
+		Model:        fields["model"],
+	}
+	if c.Name == "" {
+		cleanup()
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if v := fields["loop"]; v == "false" {
+		f := false
+		c.Loop = &f
+	}
+	for _, f := range []struct {
+		key string
+		dst *int
+	}{{"onvif_port", &c.OnvifPort}, {"onvif_https_port", &c.OnvifHTTPSPort}, {"rtsp_port", &c.RTSPPort}} {
+		if v := fields[f.key]; v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				cleanup()
+				http.Error(w, f.key+": not a number", http.StatusBadRequest)
+				return
+			}
+			*f.dst = n
+		}
+	}
+	if tmpPath != "" {
+		if c.Source != "" {
+			cleanup()
+			http.Error(w, "give either a file or an RTSP URL, not both", http.StatusBadRequest)
+			return
+		}
+		dest := filepath.Join(s.cfg.MediaDir, safeName(c.Name)+"-"+safeName(origName))
+		if _, err := os.Stat(dest); err == nil {
+			cleanup()
+			http.Error(w, "a file named "+filepath.Base(dest)+" already exists in "+s.cfg.MediaDir, http.StatusConflict)
+			return
+		}
+		if err := os.Rename(tmpPath, dest); err != nil {
+			cleanup()
+			http.Error(w, "store upload: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmpPath = dest // removed below if Add fails
+		c.Source = dest
+	} else if !strings.HasPrefix(strings.ToLower(c.Source), "rtsp://") {
+		http.Error(w, "source must be an rtsp:// URL, or upload a file", http.StatusBadRequest)
+		return
+	}
+
+	cam, err := s.ctl.Add(c)
+	if err != nil {
+		if cam == nil {
+			cleanup()
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// camera is running but the config could not be saved
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s.toJSON(cam))
+}
+
+func (s *Server) removeCamera(w http.ResponseWriter, r *http.Request) {
+	err := s.ctl.Remove(r.PathValue("name"))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		http.NotFound(w, r)
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// safeName keeps letters, digits, dot, dash and underscore.
+func safeName(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		}
+		return '_'
+	}, s)
 }
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
@@ -175,17 +370,9 @@ func (s *Server) putZones(w http.ResponseWriter, r *http.Request) {
 	if len(z.Include) == 0 {
 		z.Include = [][]config.Point{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}
 	}
-	s.saveMu.Lock()
-	defer s.saveMu.Unlock()
 	m := c.MotionCfg()
 	m.Include, m.Exclude = z.Include, z.Exclude
-	c.SetMotionCfg(m)
-	for i := range s.cfg.Cameras {
-		if s.cfg.Cameras[i].Name == c.Cfg.Name {
-			s.cfg.Cameras[i].Motion = m
-		}
-	}
-	if err := s.cfg.Save(s.cfgPath); err != nil {
+	if err := s.ctl.SaveZones(c, m); err != nil {
 		s.log.Error("save config", "err", err)
 		http.Error(w, "zones applied but config save failed: "+err.Error(), http.StatusInternalServerError)
 		return

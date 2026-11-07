@@ -148,8 +148,8 @@ func (b *eventBus) sync(s *subscription) {
 
 // ---- SOAP ----
 
-func (s *Server) subAddress(id string) string {
-	return s.XAddr("events_service/sub/" + id)
+func (s *Server) subAddress(r *request, id string) string {
+	return s.addr(r, "events_service/sub/"+id)
 }
 
 // subFromPath extracts the subscription id from /onvif/events_service/sub/<id>.
@@ -239,7 +239,7 @@ func (s *Server) registerEvents() {
 		ttl := parseDuration(p.InitialTerminationTime, time.Minute)
 		sub := s.events.create(ttl)
 		now := time.Now()
-		return `<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference><wsa:Address>` + s.subAddress(sub.id) + `</wsa:Address></tev:SubscriptionReference>` +
+		return `<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference><wsa:Address>` + s.subAddress(r, sub.id) + `</wsa:Address></tev:SubscriptionReference>` +
 			`<wsnt:CurrentTime>` + xsdTime(now) + `</wsnt:CurrentTime><wsnt:TerminationTime>` + xsdTime(sub.expires) + `</wsnt:TerminationTime></tev:CreatePullPointSubscriptionResponse>`, nil
 	})
 	s.on(e, "PullMessages", func(r *request) (string, error) {

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,12 +12,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/discovery"
-	"github.com/Assaf-Coda/onvif-cam-sim/internal/onvif"
-	"github.com/Assaf-Coda/onvif-cam-sim/internal/rtsp"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/source"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/tlscert"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/web"
 )
 
@@ -74,66 +73,63 @@ func main() {
 		return
 	}
 
-	var devices []discovery.Device
-	var camList []*camera.Camera
-	rtspByCam := map[*camera.Camera]*rtsp.Server{}
-	for _, cr := range cams {
-		clog := log.With("camera", cr.cfg.Name)
-		cam := camera.New(cr.cfg)
-		if cr.info != nil {
-			cam.SetInfo(cr.info)
-		}
-		rs := rtsp.New(clog, cfg.ListenIP, cr.cfg.RTSPPort, cfg.Users)
-		if err := rs.Start(); err != nil {
-			log.Error("rtsp listen", "camera", cr.cfg.Name, "err", err)
+	var tlsCfg *tls.Config
+	if cfg.AdminHTTPSPort > 0 || anyHTTPS(cfg.Cameras) {
+		cert, generated, err := tlscert.Load(cfg.TLSCert, cfg.TLSKey, cfg.AdvertisedIP)
+		if err != nil {
+			log.Error("tls", "err", err)
 			os.Exit(1)
 		}
-		defer rs.Close()
-		camList = append(camList, cam)
-		rtspByCam[cam] = rs
-		osrv := onvif.New(clog, cam, cfg.Users, cfg.ListenIP, cfg.AdvertisedIP, rtsp.Path)
-		if err := osrv.Start(); err != nil {
-			log.Error("onvif listen", "camera", cr.cfg.Name, "err", err)
+		if generated {
+			log.Info("self-signed certificate generated", "cert", cfg.TLSCert, "key", cfg.TLSKey)
+		}
+		tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	}
+
+	f := &fleet{log: log, ctx: ctx, cfg: cfg, cfgPath: *cfgPath, tlsCfg: tlsCfg}
+	defer f.closeAll()
+	for _, cr := range cams {
+		r, err := f.start(cr.cfg, cr.info)
+		if err != nil {
+			log.Error("camera start", "camera", cr.cfg.Name, "err", err)
 			stop()
 			return
 		}
-		defer osrv.Close()
-		devices = append(devices, discovery.Device{UUID: cam.UUID, XAddr: osrv.XAddr("device_service"), Scopes: osrv.Scopes()})
-		opts := source.Options{
-			FFmpeg:     cfg.FFmpegPath,
-			FFprobe:    cfg.FFprobePath,
-			Source:     cr.cfg.Source,
-			IsRTSP:     cr.cfg.IsRTSPSource(),
-			Loop:       cr.cfg.LoopEnabled(),
-			Info:       cr.info,
-			OnInfo:     cam.SetInfo,
-			PublishURL: fmt.Sprintf("rtsp://127.0.0.1:%d/%s", cr.cfg.RTSPPort, rtsp.Path),
-			FrameWidth: cr.cfg.Motion.AnalysisWidth,
-			FrameFPS:   cr.cfg.Motion.AnalysisFPS,
-		}
-		go source.Run(ctx, clog, opts, cam.OnFrame)
-		go cam.RunMotionTicker(ctx)
-		clog.Info("camera up", "onvif", osrv.XAddr("device_service"), "rtsp", fmt.Sprintf("rtsp://%s:%d/%s", cfg.AdvertisedIP, cr.cfg.RTSPPort, rtsp.Path))
+		f.cams = append(f.cams, r)
 	}
 
-	admin := web.New(log, cfg, *cfgPath, camList, func(c *camera.Camera) (bool, int) {
-		rs := rtspByCam[c]
-		return rs.Live(), rs.Readers()
-	})
+	admin := web.New(log, cfg, f, tlsCfg)
 	if err := admin.Start(); err != nil {
 		log.Error("admin listen", "err", err)
 		stop()
 		return
 	}
 	defer admin.Close()
-	log.Info("admin UI", "url", fmt.Sprintf("http://%s:%d/", cfg.AdvertisedIP, cfg.AdminPort))
+	log.Info("admin UI", "http", fmt.Sprintf("http://%s:%d/", cfg.AdvertisedIP, cfg.AdminPort), "https", adminHTTPS(cfg))
 
+	f.disc = discovery.New(log, f.devices())
 	go func() {
-		if err := discovery.New(log, devices).Run(ctx); err != nil {
+		if err := f.disc.Run(ctx); err != nil {
 			log.Error("ws-discovery", "err", err)
 		}
 	}()
 
 	<-ctx.Done()
 	log.Info("shutting down")
+}
+
+func anyHTTPS(cams []config.Camera) bool {
+	for _, c := range cams {
+		if c.OnvifHTTPSPort > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func adminHTTPS(cfg *config.Config) string {
+	if cfg.AdminHTTPSPort <= 0 {
+		return "disabled"
+	}
+	return fmt.Sprintf("https://%s:%d/", cfg.AdvertisedIP, cfg.AdminHTTPSPort)
 }

@@ -5,19 +5,24 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	ListenIP     string   `yaml:"listen_ip"`
-	AdvertisedIP string   `yaml:"advertised_ip"`
-	AdminPort    int      `yaml:"admin_port"`
-	FFmpegPath   string   `yaml:"ffmpeg_path"`
-	FFprobePath  string   `yaml:"ffprobe_path"`
-	Users        []User   `yaml:"users"`
-	Cameras      []Camera `yaml:"cameras"`
+	ListenIP       string   `yaml:"listen_ip"`
+	AdvertisedIP   string   `yaml:"advertised_ip"`
+	AdminPort      int      `yaml:"admin_port"`
+	AdminHTTPSPort int      `yaml:"admin_https_port"`   // 0 disables HTTPS for the admin page
+	TLSCert        string   `yaml:"tls_cert,omitempty"` // PEM files; generated self-signed next to the config when empty
+	TLSKey         string   `yaml:"tls_key,omitempty"`
+	MediaDir       string   `yaml:"media_dir,omitempty"` // where uploaded clips are stored; default <config dir>/media
+	FFmpegPath     string   `yaml:"ffmpeg_path"`
+	FFprobePath    string   `yaml:"ffprobe_path"`
+	Users          []User   `yaml:"users"`
+	Cameras        []Camera `yaml:"cameras"`
 }
 
 type User struct {
@@ -26,16 +31,17 @@ type User struct {
 }
 
 type Camera struct {
-	Name         string `yaml:"name"`
-	Source       string `yaml:"source"` // file path or rtsp:// URL
-	Loop         *bool  `yaml:"loop,omitempty"`
-	OnvifPort    int    `yaml:"onvif_port"`
-	RTSPPort     int    `yaml:"rtsp_port"`
-	Manufacturer string `yaml:"manufacturer,omitempty"`
-	Model        string `yaml:"model,omitempty"`
-	Firmware     string `yaml:"firmware,omitempty"`
-	Serial       string `yaml:"serial,omitempty"`
-	Motion       Motion `yaml:"motion"`
+	Name           string `yaml:"name"`
+	Source         string `yaml:"source"` // file path or rtsp:// URL
+	Loop           *bool  `yaml:"loop,omitempty"`
+	OnvifPort      int    `yaml:"onvif_port"`
+	OnvifHTTPSPort int    `yaml:"onvif_https_port"` // 0 disables HTTPS for this camera
+	RTSPPort       int    `yaml:"rtsp_port"`
+	Manufacturer   string `yaml:"manufacturer,omitempty"`
+	Model          string `yaml:"model,omitempty"`
+	Firmware       string `yaml:"firmware,omitempty"`
+	Serial         string `yaml:"serial,omitempty"`
+	Motion         Motion `yaml:"motion"`
 }
 
 // Point is a normalized (0..1) x,y coordinate.
@@ -65,7 +71,7 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	c.applyDefaults()
+	c.applyDefaults(filepath.Dir(path))
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -85,7 +91,7 @@ func (c *Config) Save(path string) error {
 	return os.Rename(tmp, path)
 }
 
-func (c *Config) applyDefaults() {
+func (c *Config) applyDefaults(dir string) {
 	if c.ListenIP == "" {
 		c.ListenIP = "0.0.0.0"
 	}
@@ -95,6 +101,18 @@ func (c *Config) applyDefaults() {
 	if c.AdminPort == 0 {
 		c.AdminPort = 8000
 	}
+	if c.AdminHTTPSPort == 0 {
+		c.AdminHTTPSPort = 8443
+	}
+	if c.TLSCert == "" {
+		c.TLSCert = filepath.Join(dir, "cert.pem")
+	}
+	if c.TLSKey == "" {
+		c.TLSKey = filepath.Join(dir, "key.pem")
+	}
+	if c.MediaDir == "" {
+		c.MediaDir = filepath.Join(dir, "media")
+	}
 	if c.FFmpegPath == "" {
 		c.FFmpegPath = "ffmpeg"
 	}
@@ -102,58 +120,65 @@ func (c *Config) applyDefaults() {
 		c.FFprobePath = "ffprobe"
 	}
 	for i := range c.Cameras {
-		cam := &c.Cameras[i]
-		if cam.OnvifPort == 0 {
-			cam.OnvifPort = 8081 + i
-		}
-		if cam.RTSPPort == 0 {
-			cam.RTSPPort = 8554 + i
-		}
-		if cam.Manufacturer == "" {
-			cam.Manufacturer = "SimCam"
-		}
-		if cam.Model == "" {
-			cam.Model = "S-1"
-		}
-		if cam.Firmware == "" {
-			cam.Firmware = "1.0.0"
-		}
-		if cam.Serial == "" {
-			cam.Serial = fmt.Sprintf("SIM-%04d", i+1)
-		}
-		m := &cam.Motion
-		if m.Sensitivity == 0 {
-			m.Sensitivity = 0.02
-		}
-		if m.PixelThreshold == 0 {
-			m.PixelThreshold = 25
-		}
-		if m.HoldSeconds == 0 {
-			m.HoldSeconds = 3
-		}
-		if m.AnalysisWidth == 0 {
-			m.AnalysisWidth = 320
-		}
-		if m.AnalysisFPS == 0 {
-			m.AnalysisFPS = 5
-		}
-		if len(m.Include) == 0 {
-			m.Include = [][]Point{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}
-		}
+		c.Cameras[i].ApplyDefaults(i)
+	}
+}
+
+// ApplyDefaults fills empty fields; i is the camera's index, used for default ports and serial.
+func (cam *Camera) ApplyDefaults(i int) {
+	if cam.OnvifPort == 0 {
+		cam.OnvifPort = 8081 + i
+	}
+	if cam.OnvifHTTPSPort == 0 {
+		cam.OnvifHTTPSPort = cam.OnvifPort + 1000
+	}
+	if cam.RTSPPort == 0 {
+		cam.RTSPPort = 8554 + i
+	}
+	if cam.Manufacturer == "" {
+		cam.Manufacturer = "SimCam"
+	}
+	if cam.Model == "" {
+		cam.Model = "S-1"
+	}
+	if cam.Firmware == "" {
+		cam.Firmware = "1.0.0"
+	}
+	if cam.Serial == "" {
+		cam.Serial = fmt.Sprintf("SIM-%04d", i+1)
+	}
+	m := &cam.Motion
+	if m.Sensitivity == 0 {
+		m.Sensitivity = 0.02
+	}
+	if m.PixelThreshold == 0 {
+		m.PixelThreshold = 25
+	}
+	if m.HoldSeconds == 0 {
+		m.HoldSeconds = 3
+	}
+	if m.AnalysisWidth == 0 {
+		m.AnalysisWidth = 320
+	}
+	if m.AnalysisFPS == 0 {
+		m.AnalysisFPS = 5
+	}
+	if len(m.Include) == 0 {
+		m.Include = [][]Point{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}
 	}
 }
 
 func (c *Config) Validate() error {
-	if len(c.Cameras) == 0 {
-		return fmt.Errorf("no cameras configured")
-	}
 	if len(c.Users) == 0 {
 		return fmt.Errorf("at least one user is required")
 	}
 	names := map[string]bool{}
 	ports := map[int]string{}
 	usePort := func(p int, what string) error {
-		if p <= 0 || p > 32767 {
+		if p < 0 {
+			return nil // disabled
+		}
+		if p == 0 || p > 32767 {
 			return fmt.Errorf("%s: port %d out of range 1-32767", what, p)
 		}
 		if prev, ok := ports[p]; ok {
@@ -163,6 +188,9 @@ func (c *Config) Validate() error {
 		return nil
 	}
 	if err := usePort(c.AdminPort, "admin_port"); err != nil {
+		return err
+	}
+	if err := usePort(c.AdminHTTPSPort, "admin_https_port"); err != nil {
 		return err
 	}
 	for _, cam := range c.Cameras {
@@ -182,6 +210,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		if err := usePort(cam.OnvifPort, cam.Name+" onvif_port"); err != nil {
+			return err
+		}
+		if err := usePort(cam.OnvifHTTPSPort, cam.Name+" onvif_https_port"); err != nil {
 			return err
 		}
 		if err := usePort(cam.RTSPPort, cam.Name+" rtsp_port"); err != nil {

@@ -27,12 +27,44 @@
   #wrap canvas { width:100%; display:block; cursor:crosshair; }
   #status { margin-top:8px; }
   code { background:#222; padding:1px 5px; border-radius:4px; }
+  #addForm { display:none; margin-top:10px; padding:10px; border-top:1px solid #2a2a2a; }
+  #addForm.open { display:block; }
+  #addForm label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
+  #addForm input[type=text], #addForm input[type=number] { width:100%; background:#111; color:var(--fg); border:1px solid #3a3a3a; border-radius:4px; padding:5px 7px; font:inherit; }
+  #addForm input[type=file] { width:100%; font-size:12px; }
+  #addForm .row { display:flex; gap:6px; } #addForm .row > * { flex:1; }
+  #addForm .kind { display:flex; gap:12px; margin:6px 0; } #addForm .kind label { display:inline; margin:0; color:var(--fg); }
+  #addForm .actions { display:flex; gap:6px; margin-top:10px; }
+  button.danger { border-color:#7a2e2e; color:var(--exc); }
+  #addMsg { margin-top:6px; }
 </style>
 </head>
 <body>
 <header><h1>ONVIF Camera Simulator</h1><span class="small" id="hint">Click to add polygon points, double-click to close the polygon. Save writes config.yaml and applies at once.</span></header>
 <main>
-  <aside id="list"></aside>
+  <aside>
+    <div id="list"></div>
+    <div style="padding:8px"><button id="addToggle">Add camera</button></div>
+    <form id="addForm">
+      <label>Name</label><input type="text" name="name" placeholder="gate" required pattern="[^/ \t?#]+">
+      <div class="kind">
+        <label><input type="radio" name="kind" value="file" checked> Upload clip</label>
+        <label><input type="radio" name="kind" value="rtsp"> RTSP URL</label>
+      </div>
+      <div id="kindFile"><label>MP4 / MOV file (H.264 or H.265)</label><input type="file" name="file" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime"></div>
+      <div id="kindRtsp" style="display:none"><label>RTSP URL (with port)</label><input type="text" name="source" placeholder="rtsp://user:pass@192.168.1.50:554/stream1"></div>
+      <div class="row">
+        <div><label>ONVIF port</label><input type="number" name="onvif_port" placeholder="auto" min="1" max="32767"></div>
+        <div><label>RTSP port</label><input type="number" name="rtsp_port" placeholder="auto" min="1" max="32767"></div>
+      </div>
+      <div class="row">
+        <div><label>Manufacturer</label><input type="text" name="manufacturer" placeholder="SimCam"></div>
+        <div><label>Model</label><input type="text" name="model" placeholder="S-1"></div>
+      </div>
+      <div class="actions"><button type="submit" class="primary" id="addSubmit">Add</button><button type="button" id="addCancel">Cancel</button></div>
+      <div id="addMsg" class="small"></div>
+    </form>
+  </aside>
   <section>
     <div class="toolbar">
       <button id="modeInc" class="inc on">Draw include zone</button>
@@ -40,6 +72,7 @@
       <button id="undo">Undo point</button>
       <button id="clear">Clear all zones</button>
       <button id="save" class="primary">Save</button>
+      <button id="remove" class="danger">Remove camera</button>
       <span id="msg" class="small"></span>
     </div>
     <div id="wrap"><canvas id="c" width="960" height="540"></canvas></div>
@@ -54,11 +87,14 @@ const cv = $('#c'), ctx = cv.getContext('2d');
 async function refresh() {
   const r = await fetch('/api/cameras'); if (!r.ok) return;
   cams = await r.json();
+  if (sel && !cams.find(x => x.name === sel)) sel = null;
   if (!sel && cams.length) select(cams[0].name, true);
   renderList();
   const c = cams.find(x => x.name === sel);
-  if (c) $('#status').innerHTML =
-    `<b>${c.name}</b> &nbsp; ${c.codec} ${c.width}x${c.height} &nbsp; ONVIF <code>http://${location.hostname}:${c.onvif_port}/onvif/device_service</code> &nbsp; RTSP <code>rtsp://${location.hostname}:${c.rtsp_port}/stream</code>` +
+  if (!c) { $('#status').innerHTML = cams.length ? '' : 'No cameras yet. Use Add camera.'; draw(); return; }
+  const https = c.onvif_https_port > 0 ? ` &nbsp; HTTPS <code>https://${location.hostname}:${c.onvif_https_port}/onvif/device_service</code>` : '';
+  $('#status').innerHTML =
+    `<b>${c.name}</b> &nbsp; ${c.codec} ${c.width}x${c.height} &nbsp; ONVIF <code>http://${location.hostname}:${c.onvif_port}/onvif/device_service</code>${https} &nbsp; RTSP <code>rtsp://${location.hostname}:${c.rtsp_port}/stream</code>` +
     `<br>motion: <b>${c.motion ? 'ACTIVE' : 'idle'}</b> (changed ${(c.motion_ratio*100).toFixed(2)}%, trigger ${(c.settings.sensitivity*100).toFixed(2)}%, hold ${c.settings.hold_seconds}s) &nbsp; stream ${c.live ? 'live' : 'down'}, ${c.readers} reader(s)`;
 }
 function renderList() {
@@ -101,6 +137,39 @@ $('#save').onclick = async () => {
   $('#msg').textContent = r.ok ? 'Saved to config.yaml' : 'Save failed: ' + await r.text();
   if (r.ok) { dirty = false; await refresh(); select(sel, true); }
   setTimeout(() => $('#msg').textContent = '', 4000);
+};
+$('#remove').onclick = async () => {
+  if (!sel || !confirm(`Remove camera "${sel}"? Its uploaded clip (if any) is deleted too.`)) return;
+  const r = await fetch(`/api/cameras/${sel}`, {method:'DELETE'});
+  $('#msg').textContent = r.ok ? 'Camera removed' : 'Remove failed: ' + await r.text();
+  if (r.ok) { sel = null; dirty = false; img = new Image(); await refresh(); }
+  setTimeout(() => $('#msg').textContent = '', 4000);
+};
+const form = $('#addForm');
+$('#addToggle').onclick = () => form.classList.toggle('open');
+$('#addCancel').onclick = () => { form.classList.remove('open'); form.reset(); $('#addMsg').textContent = ''; };
+form.querySelectorAll('input[name=kind]').forEach(el => el.onchange = () => {
+  const file = form.kind.value === 'file';
+  $('#kindFile').style.display = file ? '' : 'none'; $('#kindRtsp').style.display = file ? 'none' : '';
+});
+form.onsubmit = async e => {
+  e.preventDefault();
+  const fd = new FormData();
+  for (const k of ['name','onvif_port','rtsp_port','manufacturer','model']) if (form[k].value) fd.append(k, form[k].value);
+  if (form.kind.value === 'rtsp') {
+    if (!form.source.value) { $('#addMsg').textContent = 'RTSP URL is required'; return; }
+    fd.append('source', form.source.value);
+  } else {
+    if (!form.file.files.length) { $('#addMsg').textContent = 'Choose a file'; return; }
+    fd.append('file', form.file.files[0]);
+  }
+  $('#addSubmit').disabled = true; $('#addMsg').textContent = form.kind.value === 'file' ? 'Uploading and probing...' : 'Probing...';
+  const r = await fetch('/api/cameras', {method:'POST', body: fd});
+  $('#addSubmit').disabled = false;
+  if (!r.ok) { $('#addMsg').textContent = 'Failed: ' + await r.text(); return; }
+  const c = await r.json();
+  $('#addMsg').textContent = ''; form.reset(); form.classList.remove('open');
+  await refresh(); select(c.name, true);
 };
 refresh(); setInterval(refresh, 1000); setInterval(loadImg, 2000);
 </script>

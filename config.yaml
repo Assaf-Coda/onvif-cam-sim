@@ -1,6 +1,10 @@
 listen_ip: 0.0.0.0
 advertised_ip: 192.168.1.121
 admin_port: 8000
+admin_https_port: 8443
+tls_cert: cert.pem
+tls_key: key.pem
+media_dir: media
 ffmpeg_path: ffmpeg
 ffprobe_path: ffprobe
 users:
@@ -10,6 +14,7 @@ cameras:
     - name: lobby
       source: ./media/mot20_h264_aac.mp4
       onvif_port: 8081
+      onvif_https_port: 9081
       rtsp_port: 8554
       manufacturer: SimCam
       model: S-1
@@ -42,6 +47,7 @@ cameras:
     - name: yard
       source: ./media/mot20_h265.mov
       onvif_port: 8082
+      onvif_https_port: 9082
       rtsp_port: 8555
       manufacturer: SimCam
       model: S-1
@@ -66,6 +72,7 @@ cameras:
     - name: relay
       source: rtsp://admin:admin@127.0.0.1:8554/stream
       onvif_port: 8083
+      onvif_https_port: 9083
       rtsp_port: 8556
       manufacturer: SimCam
       model: S-1
@@ -90,6 +97,7 @@ cameras:
     - name: synth
       source: ./media/motion_test.mp4
       onvif_port: 8084
+      onvif_https_port: 9084
       rtsp_port: 8557
       manufacturer: SimCam
       model: S-1

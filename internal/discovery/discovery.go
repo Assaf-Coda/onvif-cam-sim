@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type Device struct {
 
 type Service struct {
 	log     *slog.Logger
+	mu      sync.Mutex
 	devices []Device
 	conn    *net.UDPConn
 }
@@ -40,12 +42,20 @@ func (s *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ws-discovery listen: %w", err)
 	}
+	s.mu.Lock()
 	s.conn = conn
 	_ = conn.SetReadBuffer(1 << 16)
-	s.hello()
+	for _, d := range s.devices {
+		s.hello(d)
+	}
+	s.mu.Unlock()
 	go func() {
 		<-ctx.Done()
-		s.bye()
+		s.mu.Lock()
+		for _, d := range s.devices {
+			s.bye(d)
+		}
+		s.mu.Unlock()
 		conn.Close()
 	}()
 	buf := make([]byte, 1<<16)
@@ -79,6 +89,8 @@ func (s *Service) handle(pkt []byte, from *net.UDPAddr) {
 	if t := strings.TrimSpace(p.Types); t != "" && !strings.Contains(t, "NetworkVideoTransmitter") && !strings.Contains(t, "Device") {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, d := range s.devices {
 		msg := s.envelope("http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches", p.MessageID,
 			`<d:ProbeMatches>`+s.match(d, "d:ProbeMatch")+`</d:ProbeMatches>`)
@@ -89,19 +101,41 @@ func (s *Service) handle(pkt []byte, from *net.UDPAddr) {
 	s.log.Debug("ws-discovery probe answered", "from", from, "matches", len(s.devices))
 }
 
-func (s *Service) hello() {
-	for _, d := range s.devices {
-		msg := s.envelope("http://schemas.xmlsoap.org/ws/2005/04/discovery/Hello", "", s.match(d, "d:Hello"))
-		_, _ = s.conn.WriteToUDP([]byte(msg), group)
+// Add announces a device added at runtime with a Hello.
+func (s *Service) Add(d Device) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.devices = append(s.devices, d)
+	if s.conn != nil {
+		s.hello(d)
 	}
 }
 
-func (s *Service) bye() {
-	for _, d := range s.devices {
-		msg := s.envelope("http://schemas.xmlsoap.org/ws/2005/04/discovery/Bye", "",
-			`<d:Bye><wsa:EndpointReference><wsa:Address>urn:uuid:`+d.UUID+`</wsa:Address></wsa:EndpointReference></d:Bye>`)
-		_, _ = s.conn.WriteToUDP([]byte(msg), group)
+// Remove sends Bye for the device and stops answering probes for it.
+func (s *Service) Remove(uuid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, d := range s.devices {
+		if d.UUID == uuid {
+			s.devices = append(s.devices[:i], s.devices[i+1:]...)
+			if s.conn != nil {
+				s.bye(d)
+			}
+			return
+		}
 	}
+}
+
+// hello and bye are called with s.mu held and s.conn set.
+func (s *Service) hello(d Device) {
+	msg := s.envelope("http://schemas.xmlsoap.org/ws/2005/04/discovery/Hello", "", s.match(d, "d:Hello"))
+	_, _ = s.conn.WriteToUDP([]byte(msg), group)
+}
+
+func (s *Service) bye(d Device) {
+	msg := s.envelope("http://schemas.xmlsoap.org/ws/2005/04/discovery/Bye", "",
+		`<d:Bye><wsa:EndpointReference><wsa:Address>urn:uuid:`+d.UUID+`</wsa:Address></wsa:EndpointReference></d:Bye>`)
+	_, _ = s.conn.WriteToUDP([]byte(msg), group)
 }
 
 func (s *Service) match(d Device, tag string) string {
