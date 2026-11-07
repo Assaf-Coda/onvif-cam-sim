@@ -22,13 +22,29 @@ One process can simulate many cameras. Each camera gets its own ONVIF port and R
 
 ## Install from GitHub
 
-One command, on macOS, Linux or Windows:
+Prebuilt binaries are attached to each [GitHub Release](https://github.com/Assaf-Coda/onvif-cam-sim/releases). The install scripts download the latest one for your platform, verify its SHA-256 checksum and put it on your PATH. No Go toolchain needed.
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Assaf-Coda/onvif-cam-sim/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Assaf-Coda/onvif-cam-sim/main/install.ps1 | iex
+```
+
+The shell script installs to `/usr/local/bin` when writable, otherwise to `~/.local/bin`; set `BIN_DIR` to choose, and `VERSION=v0.1.0` to pin a release. The PowerShell script installs to `%LOCALAPPDATA%\onvif-cam-sim` and adds it to the user PATH. Running the same command again updates to the latest release. You can also pick an archive from the Releases page by hand; each contains the binary, `config.example.yaml`, README, LICENSE and NOTICE.
+
+With Go installed, this works as well and builds the latest commit on `main`:
 
 ```bash
 go install github.com/Assaf-Coda/onvif-cam-sim/cmd/onvif-cam-sim@latest
 ```
 
-The binary lands in `$(go env GOPATH)/bin` (usually `~/go/bin`, or `%USERPROFILE%\go\bin` on Windows); add that directory to your PATH if it is not already. Then fetch the example config, edit it, and run:
+Then fetch the example config, edit it, and run:
 
 ```bash
 mkdir onvif-cam-sim && cd onvif-cam-sim
@@ -36,8 +52,6 @@ curl -fsSL https://raw.githubusercontent.com/Assaf-Coda/onvif-cam-sim/main/confi
 onvif-cam-sim -check     # probes every source and exits
 onvif-cam-sim            # runs all cameras, admin page on port 8000 and 8443
 ```
-
-On Windows PowerShell use `Invoke-WebRequest -Uri https://raw.githubusercontent.com/Assaf-Coda/onvif-cam-sim/main/config.example.yaml -OutFile config.yaml` instead of curl. To update later, run the same `go install` command again.
 
 ## Build from source
 
@@ -49,7 +63,7 @@ cp config.example.yaml config.yaml      # edit sources, ports and credentials
 ./bin/onvif-cam-sim
 ```
 
-`make release` cross-compiles static binaries for darwin (arm64, amd64), linux (amd64, arm64) and windows (amd64) into `dist/`.
+`make release` cross-compiles static binaries for darwin (arm64, amd64), linux (amd64, arm64) and windows (amd64) into `dist/`. Pushing a tag `v*` runs the same build in GitHub Actions and publishes the archives and `checksums.txt` as a release.
 
 Then open `http://<host>:8000/` or `https://<host>:8443/` with the configured user to see the cameras, their motion state and the zone editor. The same page adds and removes cameras at runtime: upload an MP4 or MOV clip or enter an RTSP URL with its port, and the camera starts immediately, is announced on WS-Discovery, and is written to `config.yaml`. Uploaded clips are stored in `media_dir`, marked `uploaded: true` in the config, and deleted again when that camera is removed; clips you placed there yourself are never deleted. Add a camera to your VMS either by ONVIF discovery or manually with the host IP, the camera's `onvif_port` (or `onvif_https_port`), and the configured user and password.
 

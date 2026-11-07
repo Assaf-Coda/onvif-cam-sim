@@ -1,0 +1,45 @@
+# Builds static binaries for every supported platform when a v* tag is pushed
+# and attaches them, with a checksum file, to a GitHub Release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go vet ./... && go test ./...
+      - name: Build
+        run: make release VERSION=${GITHUB_REF_NAME}
+      - name: Package
+        run: |
+          set -eu
+          cd dist
+          for f in onvif-cam-sim_*; do
+            base=${f%.exe}
+            mkdir -p "pkg/$base"
+            cp ../README.md ../LICENSE ../NOTICE ../config.example.yaml "pkg/$base/"
+            case "$f" in
+              *.exe) cp "$f" "pkg/$base/onvif-cam-sim.exe"; (cd pkg && zip -qr "../$base.zip" "$base") ;;
+              *)     cp "$f" "pkg/$base/onvif-cam-sim"; tar -C pkg -czf "$base.tar.gz" "$base" ;;
+            esac
+            rm "$f"
+          done
+          rm -r pkg
+          sha256sum *.tar.gz *.zip > checksums.txt
+          ls -la
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
