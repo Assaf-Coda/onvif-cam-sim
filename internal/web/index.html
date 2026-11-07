@@ -58,6 +58,10 @@
         <div><label>RTSP port</label><input type="number" name="rtsp_port" placeholder="auto" min="1" max="32767"></div>
       </div>
       <div class="row">
+        <div><label>HTTPS</label><label style="display:flex;align-items:center;gap:6px;color:var(--fg);margin:4px 0"><input type="checkbox" name="https" checked> enabled</label></div>
+        <div><label>HTTPS port</label><input type="number" name="onvif_https_port" placeholder="ONVIF port + 1000" min="1" max="32767"></div>
+      </div>
+      <div class="row">
         <div><label>Manufacturer</label><input type="text" name="manufacturer" placeholder="SimCam"></div>
         <div><label>Model</label><input type="text" name="model" placeholder="S-1"></div>
       </div>
@@ -92,7 +96,7 @@ async function refresh() {
   renderList();
   const c = cams.find(x => x.name === sel);
   if (!c) { $('#status').innerHTML = cams.length ? '' : 'No cameras yet. Use Add camera.'; draw(); return; }
-  const https = c.onvif_https_port > 0 ? ` &nbsp; HTTPS <code>https://${location.hostname}:${c.onvif_https_port}/onvif/device_service</code>` : '';
+  const https = c.onvif_https_port > 0 ? ` &nbsp; HTTPS <code>https://${location.hostname}:${c.onvif_https_port}/onvif/device_service</code>` : ' &nbsp; HTTPS off';
   $('#status').innerHTML =
     `<b>${c.name}</b> &nbsp; ${c.codec} ${c.width}x${c.height} &nbsp; ONVIF <code>http://${location.hostname}:${c.onvif_port}/onvif/device_service</code>${https} &nbsp; RTSP <code>rtsp://${location.hostname}:${c.rtsp_port}/stream</code>` +
     `<br>motion: <b>${c.motion ? 'ACTIVE' : 'idle'}</b> (changed ${(c.motion_ratio*100).toFixed(2)}%, trigger ${(c.settings.sensitivity*100).toFixed(2)}%, hold ${c.settings.hold_seconds}s) &nbsp; stream ${c.live ? 'live' : 'down'}, ${c.readers} reader(s)`;
@@ -148,6 +152,7 @@ $('#remove').onclick = async () => {
 const form = $('#addForm');
 $('#addToggle').onclick = () => form.classList.toggle('open');
 $('#addCancel').onclick = () => { form.classList.remove('open'); form.reset(); $('#addMsg').textContent = ''; };
+form.https.onchange = () => { form.onvif_https_port.disabled = !form.https.checked; };
 form.querySelectorAll('input[name=kind]').forEach(el => el.onchange = () => {
   const file = form.kind.value === 'file';
   $('#kindFile').style.display = file ? '' : 'none'; $('#kindRtsp').style.display = file ? 'none' : '';
@@ -156,6 +161,8 @@ form.onsubmit = async e => {
   e.preventDefault();
   const fd = new FormData();
   for (const k of ['name','onvif_port','rtsp_port','manufacturer','model']) if (form[k].value) fd.append(k, form[k].value);
+  if (!form.https.checked) fd.append('onvif_https_port', '-1');
+  else if (form.onvif_https_port.value) fd.append('onvif_https_port', form.onvif_https_port.value);
   if (form.kind.value === 'rtsp') {
     if (!form.source.value) { $('#addMsg').textContent = 'RTSP URL is required'; return; }
     fd.append('source', form.source.value);
