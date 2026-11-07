@@ -122,7 +122,7 @@ func runOnce(ctx context.Context, log *slog.Logger, o Options, onFrame FrameFunc
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
 			if line != "" {
-				log.Warn("ffmpeg: " + line)
+				log.Warn("ffmpeg: " + Redact(line))
 			}
 		}
 	}()

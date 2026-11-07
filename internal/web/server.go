@@ -65,8 +65,16 @@ func (s *Server) Close()       { s.srv.Close() }
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !httpauth.Authorized(r, s.cfg.Users) {
-			httpauth.Challenge(w)
+			if httpauth.HasDigest(r) {
+				httpauth.ChallengeStale(w)
+			} else {
+				httpauth.Challenge(w)
+			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodGet && !httpauth.SameOrigin(r) {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
 			return
 		}
 		h(w, r)

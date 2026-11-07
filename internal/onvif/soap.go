@@ -12,9 +12,46 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 )
+
+// tokenWindow is how far a UsernameToken's Created may differ from our clock;
+// nonces are remembered for the same period so a captured token cannot be replayed.
+const tokenWindow = 10 * time.Minute
+
+var seenNonces = struct {
+	sync.Mutex
+	m map[string]time.Time
+}{m: map[string]time.Time{}}
+
+// freshNonce records nonce and reports whether it was unseen within tokenWindow.
+func freshNonce(nonce string, now time.Time) bool {
+	seenNonces.Lock()
+	defer seenNonces.Unlock()
+	for k, t := range seenNonces.m {
+		if now.Sub(t) > tokenWindow {
+			delete(seenNonces.m, k)
+		}
+	}
+	if _, dup := seenNonces.m[nonce]; dup {
+		return false
+	}
+	seenNonces.m[nonce] = now
+	return true
+}
+
+// parseCreated accepts the xsd:dateTime forms ONVIF clients send.
+func parseCreated(s string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.000Z07:00", "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
 
 const (
 	nsDevice    = "http://www.onvif.org/ver10/device/wsdl"
@@ -99,7 +136,8 @@ func (r *request) param(v any) {
 }
 
 // authenticated verifies the WS-UsernameToken against the configured users.
-// ponytail: no nonce replay cache and no Created clock-skew check; this is a simulator.
+// PasswordDigest tokens must carry a Created within tokenWindow of our clock and
+// a nonce not seen before in that window.
 func (r *request) authenticated(users []config.User) bool {
 	if !r.hasToken {
 		return false
@@ -120,7 +158,15 @@ func (r *request) authenticated(users []config.User) bool {
 		h.Write([]byte(r.created))
 		h.Write([]byte(u.Password))
 		want := base64.StdEncoding.EncodeToString(h.Sum(nil))
-		return subtle.ConstantTimeCompare([]byte(want), []byte(r.password)) == 1
+		if subtle.ConstantTimeCompare([]byte(want), []byte(r.password)) != 1 {
+			return false
+		}
+		now := time.Now()
+		created, ok := parseCreated(r.created)
+		if !ok || created.Sub(now) > tokenWindow || now.Sub(created) > tokenWindow {
+			return false
+		}
+		return freshNonce(r.nonce, now)
 	}
 	return false
 }

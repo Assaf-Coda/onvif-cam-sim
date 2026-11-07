@@ -56,6 +56,10 @@ Saving zones or adding and removing cameras from the admin page rewrites `config
 
 Every ONVIF port has an HTTPS twin (`onvif_https_port`) and the admin page has `admin_https_port` (default 8443, `0` disables). Authentication is the same as over HTTP: WS-UsernameToken or HTTP Digest with the configured users. Responses follow the scheme the request came in on, so a VMS that connects over HTTPS receives HTTPS XAddrs, snapshot URI and subscription addresses, and WS-Discovery lists both addresses. On first start a self-signed certificate is generated with the standard library and written to `tls_cert` and `tls_key` (default `cert.pem` and `key.pem` next to the config); its subject alternative names cover `advertised_ip`, `127.0.0.1`, `localhost` and the hostname, and it is marked as a CA so a VMS can import `cert.pem` directly as a trust anchor. Point `tls_cert` and `tls_key` at your own PEM files to use a different certificate. RTSP itself stays plain, as Profile S specifies.
 
+### Security notes
+
+The simulator is a test tool for a lab network, not a hardened appliance. What it does: constant-time password checks; HTTP Digest with server-issued nonces (ten minute lifetime, increasing nonce count, URI bound) so captured headers cannot be replayed; WS-UsernameToken PasswordDigest with a ten minute Created window and a nonce cache; the admin API refuses cross-site browser requests; RTSP credentials in source URLs are redacted from logs; the TLS key is written with mode 0600. What it does not do: anything is accepted over plain HTTP, including Basic and PasswordText, so use the HTTPS ports when the VMS supports them; RTSP publishing into a camera is unauthenticated but only allowed from the host itself, so any local process could replace a camera's video; uploads are capped at 8 GiB per request with no total quota; ffmpeg and ffprobe parse whatever you upload, so keep them current.
+
 ## What a VMS sees
 
 | Item | Value |

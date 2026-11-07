@@ -133,8 +133,17 @@ func (s *Server) serveSOAP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.noAuth[req.Action] && !req.authenticated(s.users) && !httpauth.Authorized(r, s.users) {
-		if !req.hasToken && r.Header.Get("Authorization") == "" {
-			httpauth.Challenge(w)
+		if !req.hasToken {
+			// HTTP-level auth: answer with a fresh challenge (stale=true lets a Digest
+			// client whose nonce expired retry without asking the user again)
+			if httpauth.HasDigest(r) {
+				httpauth.ChallengeStale(w)
+			} else {
+				httpauth.Challenge(w)
+			}
+			if r.Header.Get("Authorization") != "" {
+				s.log.Warn("unauthorized", "action", req.Action, "from", r.RemoteAddr)
+			}
 			writeFault(w, req.MessageID, &soapFault{401, "Sender", "ter:NotAuthorized", "Authentication required"})
 			return
 		}

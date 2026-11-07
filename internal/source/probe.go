@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ func Probe(ctx context.Context, ffprobe, src string) (*Info, error) {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			msg = strings.TrimSpace(string(ee.Stderr))
 		}
-		return nil, fmt.Errorf("ffprobe %s: %s", src, msg)
+		return nil, fmt.Errorf("ffprobe %s: %s", Redact(src), Redact(msg))
 	}
 	var raw struct {
 		Streams []struct {
@@ -78,10 +79,10 @@ func Probe(ctx context.Context, ffprobe, src string) (*Info, error) {
 	}
 	info.DurationSec, _ = strconv.ParseFloat(raw.Format.Duration, 64)
 	if info.VideoCodec == "" {
-		return nil, fmt.Errorf("%s: no video stream", src)
+		return nil, fmt.Errorf("%s: no video stream", Redact(src))
 	}
 	if info.VideoCodec != "h264" && info.VideoCodec != "hevc" {
-		return nil, fmt.Errorf("%s: video codec %s not supported, source must be H.264 or H.265", src, info.VideoCodec)
+		return nil, fmt.Errorf("%s: video codec %s not supported, source must be H.264 or H.265", Redact(src), info.VideoCodec)
 	}
 	if info.FPS <= 0 || info.FPS > 120 {
 		info.FPS = 25
@@ -116,3 +117,8 @@ func (i *Info) AnalysisSize(width int) (int, int) {
 	}
 	return width, h
 }
+
+var userinfo = regexp.MustCompile(`://[^/@\s]+@`)
+
+// Redact hides user:password in URLs before they reach logs or error messages.
+func Redact(s string) string { return userinfo.ReplaceAllString(s, "://***@") }

@@ -184,7 +184,7 @@ func (f *fleet) Add(c config.Camera) (*camera.Camera, error) {
 		return r.cam, fmt.Errorf("camera started but config save failed: %w", err)
 	}
 	f.disc.Add(r.device())
-	f.log.Info("camera added", "camera", c.Name, "source", c.Source)
+	f.log.Info("camera added", "camera", c.Name, "source", source.Redact(c.Source))
 	return r.cam, nil
 }
 

@@ -23,9 +23,9 @@ type Dual struct {
 // New prepares the servers. httpsPort <= 0 or a nil tlsCfg disables HTTPS.
 func New(log *slog.Logger, name, listenIP string, httpPort, httpsPort int, h http.Handler, tlsCfg *tls.Config) *Dual {
 	d := &Dual{log: log, name: name}
-	d.http = &http.Server{Addr: net.JoinHostPort(listenIP, strconv.Itoa(httpPort)), Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	d.http = &http.Server{Addr: net.JoinHostPort(listenIP, strconv.Itoa(httpPort)), Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	if tlsCfg != nil && httpsPort > 0 {
-		d.https = &http.Server{Addr: net.JoinHostPort(listenIP, strconv.Itoa(httpsPort)), Handler: h, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second}
+		d.https = &http.Server{Addr: net.JoinHostPort(listenIP, strconv.Itoa(httpsPort)), Handler: h, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	}
 	return d
 }
