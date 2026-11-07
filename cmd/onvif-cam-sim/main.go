@@ -10,7 +10,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/assafhalevy/onvif-cam-sim/internal/camera"
 	"github.com/assafhalevy/onvif-cam-sim/internal/config"
+	"github.com/assafhalevy/onvif-cam-sim/internal/discovery"
+	"github.com/assafhalevy/onvif-cam-sim/internal/onvif"
 	"github.com/assafhalevy/onvif-cam-sim/internal/rtsp"
 	"github.com/assafhalevy/onvif-cam-sim/internal/source"
 )
@@ -63,14 +66,27 @@ func main() {
 		return
 	}
 
+	var devices []discovery.Device
 	for _, cr := range cams {
 		clog := log.With("camera", cr.cfg.Name)
+		cam := camera.New(cr.cfg)
+		if cr.info != nil {
+			cam.SetInfo(cr.info)
+		}
 		rs := rtsp.New(clog, cfg.ListenIP, cr.cfg.RTSPPort, cfg.Users)
 		if err := rs.Start(); err != nil {
 			log.Error("rtsp listen", "camera", cr.cfg.Name, "err", err)
 			os.Exit(1)
 		}
 		defer rs.Close()
+		osrv := onvif.New(clog, cam, cfg.Users, cfg.ListenIP, cfg.AdvertisedIP, rtsp.Path)
+		if err := osrv.Start(); err != nil {
+			log.Error("onvif listen", "camera", cr.cfg.Name, "err", err)
+			stop()
+			return
+		}
+		defer osrv.Close()
+		devices = append(devices, discovery.Device{UUID: cam.UUID, XAddr: osrv.XAddr("device_service"), Scopes: osrv.Scopes()})
 		opts := source.Options{
 			FFmpeg:     cfg.FFmpegPath,
 			FFprobe:    cfg.FFprobePath,
@@ -78,19 +94,20 @@ func main() {
 			IsRTSP:     cr.cfg.IsRTSPSource(),
 			Loop:       cr.cfg.LoopEnabled(),
 			Info:       cr.info,
+			OnInfo:     cam.SetInfo,
 			PublishURL: fmt.Sprintf("rtsp://127.0.0.1:%d/%s", cr.cfg.RTSPPort, rtsp.Path),
 			FrameWidth: cr.cfg.Motion.AnalysisWidth,
 			FrameFPS:   cr.cfg.Motion.AnalysisFPS,
 		}
-		frames := 0
-		go source.Run(ctx, clog, opts, func(rgb []byte, w, h int) {
-			frames++
-			if frames%50 == 1 {
-				clog.Debug("frame", "n", frames, "bytes", len(rgb))
-			}
-		})
-		clog.Info("camera up", "rtsp", fmt.Sprintf("rtsp://%s:%d/%s", cfg.AdvertisedIP, cr.cfg.RTSPPort, rtsp.Path))
+		go source.Run(ctx, clog, opts, cam.OnFrame)
+		clog.Info("camera up", "onvif", osrv.XAddr("device_service"), "rtsp", fmt.Sprintf("rtsp://%s:%d/%s", cfg.AdvertisedIP, cr.cfg.RTSPPort, rtsp.Path))
 	}
+
+	go func() {
+		if err := discovery.New(log, devices).Run(ctx); err != nil {
+			log.Error("ws-discovery", "err", err)
+		}
+	}()
 
 	<-ctx.Done()
 	log.Info("shutting down")
