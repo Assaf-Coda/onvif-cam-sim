@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
@@ -24,18 +23,24 @@ type running struct {
 	rs     *rtsp.Server
 	osrv   *onvif.Server
 	cancel context.CancelFunc // stops ffmpeg and the motion ticker
+	done   chan struct{}      // closed once the ffmpeg supervisor has exited
 }
 
 // fleet owns the running cameras and the config file. It implements web.Controller
 // so cameras can be added and removed from the admin page at runtime.
+//
+// opMu serializes add, remove and config writes, which can take seconds (ffprobe,
+// server shutdown). mu guards cams and cfg for the short reads the admin page
+// does every second, and is never held across slow calls.
 type fleet struct {
 	log     *slog.Logger
 	ctx     context.Context
 	cfg     *config.Config
 	cfgPath string
 	tlsCfg  *tls.Config
-	disc    *discovery.Service // set once discovery is up; nil before
+	disc    *discovery.Service
 
+	opMu sync.Mutex
 	mu   sync.Mutex
 	cams []*running
 }
@@ -71,16 +76,26 @@ func (f *fleet) start(c config.Camera, info *source.Info) (*running, error) {
 		FrameWidth: c.Motion.AnalysisWidth,
 		FrameFPS:   c.Motion.AnalysisFPS,
 	}
-	go source.Run(ctx, clog, opts, cam.OnFrame)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		source.Run(ctx, clog, opts, cam.OnFrame)
+	}()
 	go cam.RunMotionTicker(ctx)
 	clog.Info("camera up", "onvif", osrv.XAddrs(), "rtsp", fmt.Sprintf("rtsp://%s:%d/%s", f.cfg.AdvertisedIP, c.RTSPPort, rtsp.Path))
-	return &running{cam: cam, rs: rs, osrv: osrv, cancel: cancel}, nil
+	return &running{cam: cam, rs: rs, osrv: osrv, cancel: cancel, done: done}, nil
 }
 
+// stop tears the camera down and waits for ffmpeg to exit, so its source file
+// can be deleted afterwards (Windows refuses to delete an open file).
 func (r *running) stop() {
 	r.cancel()
 	r.osrv.Close()
 	r.rs.Close()
+	select {
+	case <-r.done:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 func (r *running) device() discovery.Device {
@@ -89,8 +104,10 @@ func (r *running) device() discovery.Device {
 
 func (f *fleet) closeAll() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, r := range f.cams {
+	cams := f.cams
+	f.cams = nil
+	f.mu.Unlock()
+	for _, r := range cams {
 		r.stop()
 	}
 }
@@ -132,27 +149,19 @@ func (f *fleet) Status(c *camera.Camera) (bool, int) {
 // assigned the next free ones. A file source must probe successfully; an RTSP
 // source that is offline is accepted and retried by the supervisor.
 func (f *fleet) Add(c config.Camera) (*camera.Camera, error) {
+	f.opMu.Lock()
+	defer f.opMu.Unlock()
+
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	used := map[int]bool{f.cfg.AdminPort: true, f.cfg.AdminHTTPSPort: true}
-	for _, e := range f.cfg.Cameras {
-		used[e.OnvifPort], used[e.OnvifHTTPSPort], used[e.RTSPPort] = true, true, true
-	}
-	if c.OnvifPort == 0 {
-		c.OnvifPort = nextFree(used, 8081)
-	}
-	if c.OnvifHTTPSPort == 0 {
-		c.OnvifHTTPSPort = nextFree(used, c.OnvifPort+1000)
-	}
-	if c.RTSPPort == 0 {
-		c.RTSPPort = nextFree(used, 8554)
-	}
-	c.ApplyDefaults(len(f.cfg.Cameras))
+	c.ApplyDefaults(f.freeSerialIndex(), f.cfg.UsedPorts())
 	trial := *f.cfg
 	trial.Cameras = append(append([]config.Camera{}, f.cfg.Cameras...), c)
+	f.mu.Unlock()
 	if err := trial.Validate(); err != nil {
 		return nil, err
 	}
+
+	// slow part, outside mu so the admin page keeps refreshing
 	info, err := source.Probe(f.ctx, f.cfg.FFprobePath, c.Source)
 	if err != nil {
 		if !c.IsRTSPSource() {
@@ -164,24 +173,41 @@ func (f *fleet) Add(c config.Camera) (*camera.Camera, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	f.mu.Lock()
 	f.cams = append(f.cams, r)
 	f.cfg.Cameras = trial.Cameras
-	if err := f.cfg.Save(f.cfgPath); err != nil {
+	err = f.cfg.Save(f.cfgPath)
+	f.mu.Unlock()
+	if err != nil {
 		f.log.Error("save config", "err", err)
 		return r.cam, fmt.Errorf("camera started but config save failed: %w", err)
 	}
-	if f.disc != nil {
-		f.disc.Add(r.device())
-	}
+	f.disc.Add(r.device())
 	f.log.Info("camera added", "camera", c.Name, "source", c.Source)
 	return r.cam, nil
 }
 
-// Remove stops the camera, deletes it from the config and, when its source is a
-// clip uploaded into media_dir, deletes that file too.
+// freeSerialIndex returns the smallest i whose default serial SIM-%04d is unused. Caller holds mu.
+func (f *fleet) freeSerialIndex() int {
+	taken := map[string]bool{}
+	for _, e := range f.cfg.Cameras {
+		taken[e.Serial] = true
+	}
+	i := 0
+	for taken[fmt.Sprintf("SIM-%04d", i+1)] {
+		i++
+	}
+	return i
+}
+
+// Remove stops the camera, deletes it from the config and, when its clip was
+// uploaded from the admin page, deletes that file too.
 func (f *fleet) Remove(name string) error {
+	f.opMu.Lock()
+	defer f.opMu.Unlock()
+
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	idx := -1
 	for i, r := range f.cams {
 		if r.cam.Cfg.Name == name {
@@ -189,13 +215,10 @@ func (f *fleet) Remove(name string) error {
 		}
 	}
 	if idx < 0 {
+		f.mu.Unlock()
 		return os.ErrNotExist
 	}
 	r := f.cams[idx]
-	r.stop()
-	if f.disc != nil {
-		f.disc.Remove(r.cam.UUID)
-	}
 	f.cams = append(f.cams[:idx], f.cams[idx+1:]...)
 	for i, e := range f.cfg.Cameras {
 		if e.Name == name {
@@ -203,12 +226,19 @@ func (f *fleet) Remove(name string) error {
 			break
 		}
 	}
-	if err := f.cfg.Save(f.cfgPath); err != nil {
+	err := f.cfg.Save(f.cfgPath)
+	f.mu.Unlock()
+
+	f.disc.Remove(r.cam.UUID)
+	r.stop()
+	if err != nil {
 		return fmt.Errorf("camera stopped but config save failed: %w", err)
 	}
-	if src := r.cam.Cfg.Source; !r.cam.Cfg.IsRTSPSource() && insideDir(src, f.cfg.MediaDir) {
-		if err := os.Remove(src); err == nil {
-			f.log.Info("uploaded clip deleted", "file", src)
+	if r.cam.Cfg.Uploaded {
+		if err := os.Remove(r.cam.Cfg.Source); err != nil {
+			f.log.Warn("uploaded clip not deleted", "file", r.cam.Cfg.Source, "err", err)
+		} else {
+			f.log.Info("uploaded clip deleted", "file", r.cam.Cfg.Source)
 		}
 	}
 	f.log.Info("camera removed", "camera", name)
@@ -216,6 +246,8 @@ func (f *fleet) Remove(name string) error {
 }
 
 func (f *fleet) SaveZones(c *camera.Camera, m config.Motion) error {
+	f.opMu.Lock()
+	defer f.opMu.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	c.SetMotionCfg(m)
@@ -225,23 +257,4 @@ func (f *fleet) SaveZones(c *camera.Camera, m config.Motion) error {
 		}
 	}
 	return f.cfg.Save(f.cfgPath)
-}
-
-func nextFree(used map[int]bool, from int) int {
-	p := from
-	for used[p] {
-		p++
-	}
-	used[p] = true
-	return p
-}
-
-func insideDir(path, dir string) bool {
-	ap, err1 := filepath.Abs(path)
-	ad, err2 := filepath.Abs(dir)
-	if err1 != nil || err2 != nil {
-		return false
-	}
-	rel, err := filepath.Rel(ad, ap)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

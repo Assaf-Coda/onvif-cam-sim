@@ -3,25 +3,22 @@
 package web
 
 import (
-	"context"
 	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/httpauth"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/httpsrv"
 )
 
 //go:embed index.html
@@ -40,11 +37,10 @@ type Controller interface {
 }
 
 type Server struct {
-	log   *slog.Logger
-	cfg   *config.Config
-	ctl   Controller
-	http  *http.Server
-	https *http.Server
+	log *slog.Logger
+	cfg *config.Config
+	ctl Controller
+	srv *httpsrv.Dual
 }
 
 func New(log *slog.Logger, cfg *config.Config, ctl Controller, tlsCfg *tls.Config) *Server {
@@ -59,46 +55,12 @@ func New(log *slog.Logger, cfg *config.Config, ctl Controller, tlsCfg *tls.Confi
 	mux.HandleFunc("DELETE /api/cameras/{name}", s.auth(s.removeCamera))
 	mux.HandleFunc("GET /api/cameras/{name}/snapshot.jpg", s.auth(s.snapshot))
 	mux.HandleFunc("PUT /api/cameras/{name}/zones", s.auth(s.putZones))
-	s.http = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.AdminPort), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	if tlsCfg != nil && cfg.AdminHTTPSPort > 0 {
-		s.https = &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.AdminHTTPSPort), Handler: mux, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second}
-	}
+	s.srv = httpsrv.New(log, "admin", cfg.ListenIP, cfg.AdminPort, cfg.AdminHTTPS(), mux, tlsCfg)
 	return s
 }
 
-func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", s.http.Addr)
-	if err != nil {
-		return err
-	}
-	go func() {
-		if err := s.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.log.Error("admin http", "err", err)
-		}
-	}()
-	if s.https != nil {
-		tln, err := net.Listen("tcp", s.https.Addr)
-		if err != nil {
-			ln.Close()
-			return err
-		}
-		go func() {
-			if err := s.https.Serve(tls.NewListener(tln, s.https.TLSConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.log.Error("admin https", "err", err)
-			}
-		}()
-	}
-	return nil
-}
-
-func (s *Server) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.http.Shutdown(ctx)
-	if s.https != nil {
-		_ = s.https.Shutdown(ctx)
-	}
-}
+func (s *Server) Start() error { return s.srv.Start() }
+func (s *Server) Close()       { s.srv.Close() }
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +111,7 @@ func (s *Server) toJSON(c *camera.Camera) cameraJSON {
 	info := c.Info()
 	m := c.MotionCfg()
 	return cameraJSON{
-		Name: c.Cfg.Name, Source: c.Cfg.Source, OnvifPort: c.Cfg.OnvifPort, OnvifHTTPSPort: c.Cfg.OnvifHTTPSPort, RTSPPort: c.Cfg.RTSPPort,
+		Name: c.Cfg.Name, Source: c.Cfg.Source, OnvifPort: c.Cfg.OnvifPort, OnvifHTTPSPort: c.Cfg.HTTPSPort(), RTSPPort: c.Cfg.RTSPPort,
 		Codec: info.VideoCodec, Width: info.Width, Height: info.Height,
 		Live: live, Readers: readers, FrameAgeMs: c.LastFrameAge().Milliseconds(),
 		Motion: active, MotionRatio: ratio,
@@ -216,6 +178,11 @@ func (s *Server) addCamera(w http.ResponseWriter, r *http.Request) {
 		if part.FileName() == "" {
 			continue // empty file input
 		}
+		if tmpPath != "" {
+			cleanup()
+			http.Error(w, "only one file per camera", http.StatusBadRequest)
+			return
+		}
 		origName = filepath.Base(part.FileName())
 		if err := os.MkdirAll(s.cfg.MediaDir, 0o755); err != nil {
 			http.Error(w, "media dir: "+err.Error(), http.StatusInternalServerError)
@@ -251,10 +218,11 @@ func (s *Server) addCamera(w http.ResponseWriter, r *http.Request) {
 		f := false
 		c.Loop = &f
 	}
+	var httpsPort int
 	for _, f := range []struct {
 		key string
 		dst *int
-	}{{"onvif_port", &c.OnvifPort}, {"onvif_https_port", &c.OnvifHTTPSPort}, {"rtsp_port", &c.RTSPPort}} {
+	}{{"onvif_port", &c.OnvifPort}, {"onvif_https_port", &httpsPort}, {"rtsp_port", &c.RTSPPort}} {
 		if v := fields[f.key]; v != "" {
 			n, err := strconv.Atoi(v)
 			if err != nil {
@@ -263,6 +231,9 @@ func (s *Server) addCamera(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			*f.dst = n
+			if f.key == "onvif_https_port" {
+				c.OnvifHTTPSPort = &httpsPort // 0 disables, see config.Camera
+			}
 		}
 	}
 	if tmpPath != "" {
@@ -284,6 +255,7 @@ func (s *Server) addCamera(w http.ResponseWriter, r *http.Request) {
 		}
 		tmpPath = dest // removed below if Add fails
 		c.Source = dest
+		c.Uploaded = true
 	} else if !strings.HasPrefix(strings.ToLower(c.Source), "rtsp://") {
 		http.Error(w, "source must be an rtsp:// URL, or upload a file", http.StatusBadRequest)
 		return

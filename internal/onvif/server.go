@@ -1,18 +1,17 @@
 package onvif
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/camera"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/config"
 	"github.com/Assaf-Coda/onvif-cam-sim/internal/httpauth"
+	"github.com/Assaf-Coda/onvif-cam-sim/internal/httpsrv"
 )
 
 type handler func(*request) (string, error)
@@ -27,8 +26,7 @@ type Server struct {
 	httpsPort int    // 0 = no HTTPS listener
 	rtspPort  int
 	rtspPath  string
-	http      *http.Server
-	https     *http.Server
+	srv       *httpsrv.Dual
 	handlers  map[string]handler // "namespace|Action" or "Action"
 	noAuth    map[string]bool
 	events    *eventBus
@@ -64,56 +62,15 @@ func New(log *slog.Logger, cam *camera.Camera, users []config.User, listenIP, ad
 	mux := http.NewServeMux()
 	mux.HandleFunc("/onvif/", s.serveSOAP)
 	mux.HandleFunc("/snapshot.jpg", s.serveSnapshot)
-	s.http = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", listenIP, s.port),
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	if tlsCfg != nil {
+		s.httpsPort = cam.Cfg.HTTPSPort()
 	}
-	if tlsCfg != nil && cam.Cfg.OnvifHTTPSPort > 0 {
-		s.httpsPort = cam.Cfg.OnvifHTTPSPort
-		s.https = &http.Server{
-			Addr:              fmt.Sprintf("%s:%d", listenIP, s.httpsPort),
-			Handler:           mux,
-			TLSConfig:         tlsCfg,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-	}
+	s.srv = httpsrv.New(log, "onvif", listenIP, s.port, s.httpsPort, mux, tlsCfg)
 	return s
 }
 
-func (s *Server) Start() error {
-	ln, err := listen(s.http.Addr)
-	if err != nil {
-		return err
-	}
-	go func() {
-		if err := s.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.log.Error("onvif http", "err", err)
-		}
-	}()
-	if s.https != nil {
-		tln, err := listen(s.https.Addr)
-		if err != nil {
-			ln.Close()
-			return err
-		}
-		go func() {
-			if err := s.https.Serve(tls.NewListener(tln, s.https.TLSConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.log.Error("onvif https", "err", err)
-			}
-		}()
-	}
-	return nil
-}
-
-func (s *Server) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.http.Shutdown(ctx)
-	if s.https != nil {
-		_ = s.https.Shutdown(ctx)
-	}
-}
+func (s *Server) Start() error { return s.srv.Start() }
+func (s *Server) Close()       { s.srv.Close() }
 
 // XAddr is the HTTP address of a service, used for WS-Discovery and logs.
 func (s *Server) XAddr(service string) string {

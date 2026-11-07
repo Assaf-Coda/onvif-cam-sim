@@ -161,7 +161,7 @@ form.onsubmit = async e => {
   e.preventDefault();
   const fd = new FormData();
   for (const k of ['name','onvif_port','rtsp_port','manufacturer','model']) if (form[k].value) fd.append(k, form[k].value);
-  if (!form.https.checked) fd.append('onvif_https_port', '-1');
+  if (!form.https.checked) fd.append('onvif_https_port', '0');
   else if (form.onvif_https_port.value) fd.append('onvif_https_port', form.onvif_https_port.value);
   if (form.kind.value === 'rtsp') {
     if (!form.source.value) { $('#addMsg').textContent = 'RTSP URL is required'; return; }

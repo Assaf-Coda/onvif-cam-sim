@@ -30,7 +30,7 @@ cp config.example.yaml config.yaml      # edit sources, ports and credentials
 ./bin/onvif-cam-sim                     # runs all cameras
 ```
 
-Then open `http://<host>:8000/` or `https://<host>:8443/` with the configured user to see the cameras, their motion state and the zone editor. The same page adds and removes cameras at runtime: upload an MP4 or MOV clip or enter an RTSP URL with its port, and the camera starts immediately, is announced on WS-Discovery, and is written to `config.yaml`. Uploaded clips are stored in `media_dir` and deleted again when the camera is removed. Add a camera to your VMS either by ONVIF discovery or manually with the host IP, the camera's `onvif_port` (or `onvif_https_port`), and the configured user and password.
+Then open `http://<host>:8000/` or `https://<host>:8443/` with the configured user to see the cameras, their motion state and the zone editor. The same page adds and removes cameras at runtime: upload an MP4 or MOV clip or enter an RTSP URL with its port, and the camera starts immediately, is announced on WS-Discovery, and is written to `config.yaml`. Uploaded clips are stored in `media_dir`, marked `uploaded: true` in the config, and deleted again when that camera is removed; clips you placed there yourself are never deleted. Add a camera to your VMS either by ONVIF discovery or manually with the host IP, the camera's `onvif_port` (or `onvif_https_port`), and the configured user and password.
 
 The config file may start with an empty `cameras` list if you prefer to add everything from the page.
 
@@ -44,7 +44,7 @@ See `config.example.yaml`; every key is commented there. The essentials per came
 |---|---|
 | `source` | File path (MP4/MOV, H.264 or H.265) or an `rtsp://` URL to relay |
 | `onvif_port`, `rtsp_port` | Unique ports per camera. UDP RTP uses `2*rtsp_port` and `2*rtsp_port+1` |
-| `onvif_https_port` | HTTPS port for the same ONVIF services, default `onvif_port + 1000`; set to `-1` to disable |
+| `onvif_https_port` | HTTPS port for the same ONVIF services, default `onvif_port + 1000` or the next free port; `0` disables |
 | `motion.sensitivity` | Fraction of zone pixels that must change between analysed frames to trigger motion (0.02 = 2 percent) |
 | `motion.pixel_threshold` | Per-pixel gray difference (0 to 255) that counts as a change |
 | `motion.hold_seconds` | How long motion stays active after the last detected change |
@@ -54,7 +54,7 @@ Saving zones or adding and removing cameras from the admin page rewrites `config
 
 ### HTTPS
 
-Every ONVIF port has an HTTPS twin (`onvif_https_port`) and the admin page has `admin_https_port` (default 8443, `-1` disables). Authentication is the same as over HTTP: WS-UsernameToken or HTTP Digest with the configured users. Responses follow the scheme the request came in on, so a VMS that connects over HTTPS receives HTTPS XAddrs, snapshot URI and subscription addresses, and WS-Discovery lists both addresses. On first start a self-signed certificate is generated with the standard library and written to `tls_cert` and `tls_key` (default `cert.pem` and `key.pem` next to the config); its subject alternative names cover `advertised_ip`, `127.0.0.1`, `localhost` and the hostname, and it is marked as a CA so a VMS can import `cert.pem` directly as a trust anchor. Point `tls_cert` and `tls_key` at your own PEM files to use a different certificate. RTSP itself stays plain, as Profile S specifies.
+Every ONVIF port has an HTTPS twin (`onvif_https_port`) and the admin page has `admin_https_port` (default 8443, `0` disables). Authentication is the same as over HTTP: WS-UsernameToken or HTTP Digest with the configured users. Responses follow the scheme the request came in on, so a VMS that connects over HTTPS receives HTTPS XAddrs, snapshot URI and subscription addresses, and WS-Discovery lists both addresses. On first start a self-signed certificate is generated with the standard library and written to `tls_cert` and `tls_key` (default `cert.pem` and `key.pem` next to the config); its subject alternative names cover `advertised_ip`, `127.0.0.1`, `localhost` and the hostname, and it is marked as a CA so a VMS can import `cert.pem` directly as a trust anchor. Point `tls_cert` and `tls_key` at your own PEM files to use a different certificate. RTSP itself stays plain, as Profile S specifies.
 
 ## What a VMS sees
 

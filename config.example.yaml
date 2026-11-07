@@ -4,7 +4,7 @@
 listen_ip: 0.0.0.0        # address to bind all services to
 advertised_ip: ""         # IP written into ONVIF XAddrs and stream URIs; empty = auto-detect
 admin_port: 8000          # admin page and JSON API (same credentials as below)
-admin_https_port: 8443    # HTTPS for the admin page; -1 disables
+admin_https_port: 8443    # HTTPS for the admin page; 0 disables
 tls_cert: ""              # PEM certificate and key for all HTTPS listeners; empty = self-signed
 tls_key: ""               #   cert.pem / key.pem generated next to this file on first start
 media_dir: ""             # where clips uploaded from the admin page are stored; empty = ./media
@@ -20,7 +20,7 @@ cameras:                  # may be empty; cameras can also be added from the adm
     source: ./media/lobby.mp4        # MP4/MOV with H.264 or H.265 video, or an rtsp:// URL to relay
     loop: true                       # files only
     onvif_port: 8081                 # one ONVIF HTTP port per camera
-    onvif_https_port: 9081           # same services over HTTPS; default onvif_port + 1000, -1 disables
+    onvif_https_port: 9081           # same services over HTTPS; default onvif_port + 1000 (or next free), 0 disables
     rtsp_port: 8554                  # one RTSP port per camera; UDP RTP uses 2*port and 2*port+1
     manufacturer: SimCam
     model: S-1

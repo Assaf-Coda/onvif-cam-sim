@@ -15,7 +15,7 @@ type Config struct {
 	ListenIP       string   `yaml:"listen_ip"`
 	AdvertisedIP   string   `yaml:"advertised_ip"`
 	AdminPort      int      `yaml:"admin_port"`
-	AdminHTTPSPort int      `yaml:"admin_https_port"`   // 0 disables HTTPS for the admin page
+	AdminHTTPSPort *int     `yaml:"admin_https_port"`   // nil = default 8443, 0 disables HTTPS for the admin page
 	TLSCert        string   `yaml:"tls_cert,omitempty"` // PEM files; generated self-signed next to the config when empty
 	TLSKey         string   `yaml:"tls_key,omitempty"`
 	MediaDir       string   `yaml:"media_dir,omitempty"` // where uploaded clips are stored; default <config dir>/media
@@ -35,7 +35,8 @@ type Camera struct {
 	Source         string `yaml:"source"` // file path or rtsp:// URL
 	Loop           *bool  `yaml:"loop,omitempty"`
 	OnvifPort      int    `yaml:"onvif_port"`
-	OnvifHTTPSPort int    `yaml:"onvif_https_port"` // 0 disables HTTPS for this camera
+	OnvifHTTPSPort *int   `yaml:"onvif_https_port"`   // nil = default onvif_port+1000 (or next free), 0 disables
+	Uploaded       bool   `yaml:"uploaded,omitempty"` // clip was uploaded from the admin page; deleted with the camera
 	RTSPPort       int    `yaml:"rtsp_port"`
 	Manufacturer   string `yaml:"manufacturer,omitempty"`
 	Model          string `yaml:"model,omitempty"`
@@ -58,7 +59,18 @@ type Motion struct {
 	Exclude        [][]Point `yaml:"exclude"`
 }
 
-func (c Camera) LoopEnabled() bool  { return c.Loop == nil || *c.Loop }
+func (c Camera) LoopEnabled() bool { return c.Loop == nil || *c.Loop }
+func (c Camera) HTTPSPort() int    { return deref(c.OnvifHTTPSPort) }
+func (c Config) AdminHTTPS() int   { return deref(c.AdminHTTPSPort) }
+
+func deref(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func ptr(v int) *int                { return &v }
 func (c Camera) IsRTSPSource() bool { return strings.HasPrefix(strings.ToLower(c.Source), "rtsp://") }
 func (m Motion) IsEnabled() bool    { return m.Enabled == nil || *m.Enabled }
 
@@ -101,8 +113,8 @@ func (c *Config) applyDefaults(dir string) {
 	if c.AdminPort == 0 {
 		c.AdminPort = 8000
 	}
-	if c.AdminHTTPSPort == 0 {
-		c.AdminHTTPSPort = 8443
+	if c.AdminHTTPSPort == nil {
+		c.AdminHTTPSPort = ptr(8443)
 	}
 	if c.TLSCert == "" {
 		c.TLSCert = filepath.Join(dir, "cert.pem")
@@ -119,21 +131,52 @@ func (c *Config) applyDefaults(dir string) {
 	if c.FFprobePath == "" {
 		c.FFprobePath = "ffprobe"
 	}
+	used := c.UsedPorts()
 	for i := range c.Cameras {
-		c.Cameras[i].ApplyDefaults(i)
+		c.Cameras[i].ApplyDefaults(i, used)
 	}
 }
 
-// ApplyDefaults fills empty fields; i is the camera's index, used for default ports and serial.
-func (cam *Camera) ApplyDefaults(i int) {
-	if cam.OnvifPort == 0 {
-		cam.OnvifPort = 8081 + i
+// UsedPorts returns every port explicitly configured so far (admin and cameras).
+func (c *Config) UsedPorts() map[int]bool {
+	used := map[int]bool{}
+	mark := func(p int) {
+		if p > 0 {
+			used[p] = true
+		}
 	}
-	if cam.OnvifHTTPSPort == 0 {
-		cam.OnvifHTTPSPort = cam.OnvifPort + 1000
+	mark(c.AdminPort)
+	mark(c.AdminHTTPS())
+	for _, cam := range c.Cameras {
+		mark(cam.OnvifPort)
+		mark(cam.HTTPSPort())
+		mark(cam.RTSPPort)
+	}
+	return used
+}
+
+// NextFree returns the first port >= from not in used, and marks it used.
+func NextFree(used map[int]bool, from int) int {
+	p := from
+	for used[p] {
+		p++
+	}
+	used[p] = true
+	return p
+}
+
+// ApplyDefaults fills empty fields. i is the camera's index, used for the default
+// serial and as the starting point for default ports; used holds the ports taken
+// by the rest of the config so defaults never collide with explicit ones.
+func (cam *Camera) ApplyDefaults(i int, used map[int]bool) {
+	if cam.OnvifPort == 0 {
+		cam.OnvifPort = NextFree(used, 8081+i)
+	}
+	if cam.OnvifHTTPSPort == nil {
+		cam.OnvifHTTPSPort = ptr(NextFree(used, cam.OnvifPort+1000))
 	}
 	if cam.RTSPPort == 0 {
-		cam.RTSPPort = 8554 + i
+		cam.RTSPPort = NextFree(used, 8554+i)
 	}
 	if cam.Manufacturer == "" {
 		cam.Manufacturer = "SimCam"
@@ -175,10 +218,7 @@ func (c *Config) Validate() error {
 	names := map[string]bool{}
 	ports := map[int]string{}
 	usePort := func(p int, what string) error {
-		if p < 0 {
-			return nil // disabled
-		}
-		if p == 0 || p > 32767 {
+		if p <= 0 || p > 32767 {
 			return fmt.Errorf("%s: port %d out of range 1-32767", what, p)
 		}
 		if prev, ok := ports[p]; ok {
@@ -190,8 +230,10 @@ func (c *Config) Validate() error {
 	if err := usePort(c.AdminPort, "admin_port"); err != nil {
 		return err
 	}
-	if err := usePort(c.AdminHTTPSPort, "admin_https_port"); err != nil {
-		return err
+	if p := c.AdminHTTPS(); p != 0 {
+		if err := usePort(p, "admin_https_port"); err != nil {
+			return err
+		}
 	}
 	for _, cam := range c.Cameras {
 		if cam.Name == "" || strings.ContainsAny(cam.Name, "/ \t?#") {
@@ -212,8 +254,10 @@ func (c *Config) Validate() error {
 		if err := usePort(cam.OnvifPort, cam.Name+" onvif_port"); err != nil {
 			return err
 		}
-		if err := usePort(cam.OnvifHTTPSPort, cam.Name+" onvif_https_port"); err != nil {
-			return err
+		if p := cam.HTTPSPort(); p != 0 {
+			if err := usePort(p, cam.Name+" onvif_https_port"); err != nil {
+				return err
+			}
 		}
 		if err := usePort(cam.RTSPPort, cam.Name+" rtsp_port"); err != nil {
 			return err
